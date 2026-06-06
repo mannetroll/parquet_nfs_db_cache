@@ -8,7 +8,7 @@ class DataHolder:
 
     def __init__(self):
         self.headers = tuple()
-        self.rows_data_pl = None
+        self.rows_data_pl = pl.DataFrame()
 
 
 if __name__ == "__main__":

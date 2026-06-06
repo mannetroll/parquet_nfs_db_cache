@@ -18,12 +18,12 @@ class DataContainer:
         self.data.rows_data_pl = input_data["data"]
 
 if __name__ == "__main__":
-    INPUT_DATA: dict[str, Any] = {
-        "headers": ("COL1", "COL2", "COL3"),
-        "data": [(1.1, 1, "A"), (2.2, 2, "B"), (3.3, 3, "C"), (4.4, 4, "D")],
+    headers = ("COL1", "COL2", "COL3")
+    rows = [(1.1, 1, "A"), (2.2, 2, "B"), (3.3, 3, "C"), (4.4, 4, "D")]
+    INPUT_DATA: dict[str, tuple[Any, ...] | pl.DataFrame] = {
+        "headers": headers,
+        "data": pl.DataFrame(rows, schema=headers, orient="row"),
     }
-    data = DataContainer()
-    data.headers = tuple(INPUT_DATA["headers"])
-    data.rows_data_pl = pl.DataFrame(INPUT_DATA["data"], schema=INPUT_DATA["headers"], orient="row")
-    print("headers:", data.headers)
-    print("table:", data.rows_data_pl)
+    data = DataContainer(INPUT_DATA)
+    print("headers:", data.data.headers)
+    print("table:", data.data.rows_data_pl)
