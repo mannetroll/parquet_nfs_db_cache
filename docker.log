@@ -10,3 +10,4 @@ uv run -m database.oracle_write parquet/A_TEST_1048576.parquet
 
 uv run -m database.oracle_read "select * from A_TEST_1048576"
 
+run codex resume 019e9d1f-83b3-7730-a4f5-b48d0dbbeade
