@@ -1,5 +1,6 @@
 import argparse
 import os
+import uuid
 from pathlib import Path
 
 import polars as pl
@@ -95,9 +96,17 @@ def ensure_one_parquet(
         n_int_cols=int(n_int_cols),
         n_str_cols=int(n_str_cols),
     )
-    part_path = out_path.with_name(f"{out_path.name}.part")
-    df.write_parquet(str(part_path), compression="uncompressed", statistics="full")
-    os.replace(part_path, out_path)
+    part_path = out_path.with_name(
+        f"{out_path.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
+    )
+    try:
+        df.write_parquet(str(part_path), compression="uncompressed", statistics="full")
+        os.replace(part_path, out_path)
+    finally:
+        try:
+            part_path.unlink()
+        except FileNotFoundError:
+            pass
     return out_path
 
 
