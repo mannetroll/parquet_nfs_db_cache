@@ -106,6 +106,23 @@ class DBCacheMetadataTests(unittest.TestCase):
             self.assertEqual(calls, 2)
             self.assertEqual(df["value"].to_list(), [2])
 
+    def test_sql_cache_metadata_contains_normalized_sql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cache = DBCache(tmp_path / "cache")
+            raw_sql = " select  *\nfrom DATA_CONTAINER_DEMO where id = 1; "
+            normalized_sql = "select * from DATA_CONTAINER_DEMO where id = 1"
+
+            @cache.sql_container_cache
+            def load(sql: str) -> DataContainer:
+                df = pl.DataFrame({"id": [1]})
+                return DataContainer({"headers": tuple(df.columns), "data": df})
+
+            load(raw_sql)
+            metadata = self._read_only_metadata(tmp_path / "cache")
+
+            self.assertEqual(metadata["source_sql"], normalized_sql)
+
     @staticmethod
     def _only_metadata_path(cache_dir: Path) -> Path:
         paths = list(cache_dir.rglob("*.meta.json"))

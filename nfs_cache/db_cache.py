@@ -61,6 +61,7 @@ class DBCache:
                 display_key,
                 lambda: self._source_version(args_tuple, kwargs_dict),
                 lambda: func(*args, **kwargs),
+                source_sql=None,
             )
 
         return wrapper
@@ -72,12 +73,14 @@ class DBCache:
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
             sql = args[0] if args else kwargs["sql"]
+            normalized_sql = self._normalize_sql(str(sql))
             return_cols = kwargs.get("return_cols")
-            display_key = self._sql_display_key(str(sql), return_cols)
+            display_key = self._sql_display_key(normalized_sql, return_cols)
             return self._run_cached(
                 display_key,
-                lambda: self._sql_source_version(str(sql)),
+                lambda: self._sql_source_version(normalized_sql),
                 lambda: func(*args, **kwargs),
+                source_sql=normalized_sql,
             )
 
         return wrapper
@@ -87,6 +90,8 @@ class DBCache:
         display_key: str,
         version_fn: Callable[[], str | None],
         load_fn: Callable[[], DataContainer],
+        *,
+        source_sql: str | None,
     ) -> DataContainer:
         cache_path = self._cache_path(display_key)
         meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
@@ -101,6 +106,7 @@ class DBCache:
                 meta_path,
                 display_key,
                 source_version,
+                source_sql,
             )
             if cached is not None:
                 return cached
@@ -116,6 +122,7 @@ class DBCache:
                     meta_path,
                     display_key,
                     source_version,
+                    source_sql,
                     data,
                 )
                 return data
@@ -143,12 +150,14 @@ class DBCache:
         meta_path: Path,
         display_key: str,
         source_version: str | None,
+        source_sql: str | None,
     ) -> DataContainer | None:
         metadata = self._read_valid_metadata(
             cache_path,
             meta_path,
             display_key,
             source_version,
+            source_sql,
         )
         if metadata is None:
             return None
@@ -194,6 +203,7 @@ class DBCache:
         meta_path: Path,
         display_key: str,
         source_version: str | None,
+        source_sql: str | None,
         data: DataContainer,
     ) -> None:
         df = data.data.rows_data_pl
@@ -212,6 +222,7 @@ class DBCache:
                 cache_path=cache_path,
                 parquet_path=part_path,
                 source_version=source_version,
+                source_sql=source_sql,
                 row_count=table.num_rows,
                 column_count=table.num_columns,
                 schema=table.schema,
@@ -235,6 +246,7 @@ class DBCache:
         cache_path: Path,
         parquet_path: Path,
         source_version: str | None,
+        source_sql: str | None,
         row_count: int,
         column_count: int,
         schema: object,
@@ -255,9 +267,10 @@ class DBCache:
                 "row_count": row_count,
                 "column_count": column_count,
                 "schema_hash": self._schema_hash(schema_metadata),
-                "schema": schema_metadata,
             },
         }
+        if source_sql is not None:
+            metadata["source_sql"] = source_sql
         meta_part_path.write_text(
             json.dumps(metadata, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
@@ -339,6 +352,7 @@ class DBCache:
         meta_path: Path,
         display_key: str,
         source_version: str | None,
+        source_sql: str | None,
     ) -> dict[str, object] | None:
         if not self._is_complete(cache_path):
             return None
@@ -365,6 +379,7 @@ class DBCache:
             cache_path,
             display_key,
             source_version,
+            source_sql,
         )
         if reason is not None:
             print(f"Ignoring cache entry: {display_key}: {reason}", flush=True)
@@ -378,6 +393,7 @@ class DBCache:
         cache_path: Path,
         display_key: str,
         source_version: str | None,
+        source_sql: str | None,
     ) -> str | None:
         if not isinstance(metadata, dict):
             return "corrupt metadata: top-level JSON must be an object"
@@ -390,6 +406,9 @@ class DBCache:
 
         if metadata.get("source_key") != display_key:
             return "source key mismatch"
+
+        if source_sql is not None and metadata.get("source_sql") != source_sql:
+            return "source SQL mismatch"
 
         if "source_version" not in metadata:
             return "corrupt metadata: missing source version"

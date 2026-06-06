@@ -20,7 +20,8 @@ Current foundation
 - Each cache key has a mkdir-based lock directory to serialize writers.
 - Metadata sidecars are authoritative commit markers. They store source_key,
   source_version, parquet byte size, parquet SHA-256, row count, column count,
-  schema hash, writer version, and created_at.
+  schema hash, writer version, created_at, and the normalized SQL for SQL-backed
+  entries.
 - Readers reject cache entries with missing, stale, unsupported, or corrupt
   metadata, and they validate parquet size/checksum/row count/schema before
   returning a warm hit.
