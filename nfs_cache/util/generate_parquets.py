@@ -3,16 +3,9 @@ from pathlib import Path
 
 import polars as pl
 
-from nfs_cache.data.data_container import DataContainer
-
 
 def _with_prefix(prefix: str, base_name: str) -> str:
     return f"{prefix}{base_name}"
-
-
-def load_parquet_for_polars(path: Path) -> DataContainer:
-    df = pl.read_parquet(path)
-    return DataContainer({"headers": tuple(df.columns), "data": df})
 
 
 def _generate_df_prefixed(
