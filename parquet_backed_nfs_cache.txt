@@ -1,0 +1,19 @@
+Implementation of a NFS cache for Containers that have
+internal Polars Dataframes, and use the fast Polars parquet reader.
+
+# implementation
+# dbcache = DBCache(Path("__cache__/nfs"),")
+
+# decorators
+# #@dbcache.data_container_cache
+
+Run: $ uv run -m main
+To test cache, expected output when done:
+Reading: parquet/A_TEST_1048576.parquet...
+Returning cached object: parquet/A_TEST_1048576.parquet...
+
+The cache should be able to handle multiple clients.
+Writing to cache should be done threadsafe in parallel.
+If reading (cold) container data is slow (i.e. from a DB),
+create a .part file during reading, and rename it to the final name when done.
+
