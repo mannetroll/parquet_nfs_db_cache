@@ -28,25 +28,25 @@ I file: database/oracle_read.py, line 57
 Implement
 @dbcache.sql_container_cache
 
-# Used to compute a cache key version stamp for a table.
+# Compute a cache key version stamp for a table.
 VERSION_SQL = "SELECT COUNT(*) AS n_rows, MAX(ORA ROWS) AS max_rows_scn FROM ${TABLE}"
 
 # Normalize SQL and cols for stable fingerprint
-normalized_sql = " " join(sqL_query split()).strip().rstrip(";")
-cols_key = *|"-join(sorted(str(c).upper() for c in return_cols)) if return_cols else "-"
+normalized_sql = " " join(sqL_query.split()).strip().rstrip(";")
+cols_key = "|"-join(sorted(str(c).upper() for c in return_cols)) if return_cols else "-"
 table_name = "NO_TABLE"
 SCN = 0
 m = re. search( pattern: r"|bfrom|s+([*\s;]+)", normalized_sql, re. IGNORECASE)
 if m:
     table_name = m. group (1)
     # could be schema. table or ${TABLE}
-    table_key = table_name.split(*.°)[-1].upperO
+    table_key = table_name.split(".")[-1].upper()
     cursor. execute(VERSION_SQL. replace(old: "${TABLE}", table_name))
-    row = cursor. fetchone)
+    row = cursor.fetchone()
     if row and row[1] is not None:
-        scn = int(row 1])
+        scn = int(row[1])
 
-cache_key = f"{table_name.upper()}QSCN:{scn}
+cache_key = f"{table_name.upper()}@SCN:{scn}
 
 ---------------------------------------------------------------------------
 
