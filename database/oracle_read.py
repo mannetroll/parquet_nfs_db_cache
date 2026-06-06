@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 import argparse
-import re
-
 import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
 from nfs_cache.data.data_container import DataContainer
 
-IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
+DEFAULT_BATCH_SIZE = 10000
 
 
-def oracle_identifier(name: str) -> str:
-    if not IDENTIFIER_RE.fullmatch(name):
-        raise ValueError(f"Invalid Oracle identifier: {name!r}")
-    return name.upper()
+def oracle_args() -> argparse.Namespace:
+    args = argparse.Namespace(
+        host="localhost",
+        port=1521,
+        service="FREEPDB1",
+        user="SOMEUSER",
+        password="cache",
+        batch_size=DEFAULT_BATCH_SIZE,
+    )
+    apply_dotenv(args)
+    return args
 
 
 def connect(args: argparse.Namespace) -> oracledb.Connection:
@@ -27,16 +32,16 @@ def connect(args: argparse.Namespace) -> oracledb.Connection:
     )
 
 
-def read_data_container(
+def _fetch_data_container(
     connection: oracledb.Connection,
-    table_name: str,
+    sql: str,
     *,
     batch_size: int,
 ) -> DataContainer:
     batches: list[pl.DataFrame] = []
     with connection.cursor() as cursor:
         cursor.arraysize = batch_size
-        cursor.execute(f"select * from {table_name}")
+        cursor.execute(sql)
         headers = tuple(column[0] for column in cursor.description)
 
         while True:
@@ -49,11 +54,21 @@ def read_data_container(
     return DataContainer({"headers": headers, "data": df})
 
 
+def read_data_container(sql: str) -> DataContainer:
+    args = oracle_args()
+    with connect(args) as connection:
+        return _fetch_data_container(
+            connection,
+            sql,
+            batch_size=int(args.batch_size),
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read an Oracle table into a DataContainer."
+        description="Read Oracle SQL into a DataContainer."
     )
-    parser.add_argument("table")
+    parser.add_argument("sql")
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=1521)
     parser.add_argument("--service", default="FREEPDB1")
@@ -67,11 +82,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    table_name = oracle_identifier(args.table)
     with connect(args) as connection:
-        container = read_data_container(
+        container = _fetch_data_container(
             connection,
-            table_name,
+            args.sql,
             batch_size=int(args.batch_size),
         )
 
