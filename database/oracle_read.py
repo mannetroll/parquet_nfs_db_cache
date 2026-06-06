@@ -90,13 +90,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    with connect(args) as connection:
-        container = _fetch_data_container(
-            connection,
-            args.sql,
-            batch_size=int(args.batch_size),
-        )
-
+    # Go through the cache so the run reports Oracle (miss) vs cache (hit).
+    container = read_data_container(args.sql)
     print("table:", container.data.rows_data_pl)
     return 0
 
