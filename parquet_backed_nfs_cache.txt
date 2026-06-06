@@ -21,3 +21,72 @@ create a .part file during reading, and rename it to the final name when done.
 Cache key: __cache__/nfs/parquet/A_TEST_1048576.parquet will not work,
 if content hash(parquet/A_TEST_524288.parquet) like a SCN from Oracle,
 the cache need to invalide that item and restore.
+
+---------------------------------------------------------------------------
+
+Not yet as production-grade enterprise cache.
+
+  It is a decent prototype for:
+
+  - multiple clients using the same NFS-backed cache
+  - one writer per cache key
+  - atomic parquet replacement via .part + os.replace
+  - invalidation by source version/hash
+  - avoiding partial cache reads
+
+  But for Oracle + NFS + many clients, I would not trust it fully without these additions:
+
+  1. Use Oracle SCN, not file hash
+
+  For DB data, the source version should be an Oracle SCN or equivalent snapshot/version token:
+
+  dbcache = DBCache(Path("__cache__/nfs"), source_version=lambda query_key, scn: scn)
+
+  The cache should not hash data after loading from Oracle. It should ask Oracle for a stable SCN before loading and use that as the cache version.
+
+  2. Stale lock handling
+
+  Current .lock directories can survive a crashed writer. Production needs lock metadata with PID/hostname/timestamp and timeout/recovery rules.
+
+  3. NFS semantics need validation
+
+  mkdir lock and os.replace are usually the right primitives for NFS, but behavior depends on NFS version, mount options, cache settings, and server implementation. This needs
+  testing on your actual NFS.
+
+  4. Readers are serialized per key
+
+  Right now reads and writes for the same cache key both take the same lock. That is safe but can reduce throughput. Enterprise use may need a read/write lock or lock-free
+  reads with stronger metadata ordering.
+
+  5. Metadata ordering should be stricter
+
+  The cache writes parquet then metadata. That is mostly okay, but production should define exactly what is authoritative and possibly include parquet size/checksum in
+  metadata.
+
+  6. Observability
+
+  You need structured logs/metrics:
+
+  - cache hit/miss/reload
+  - source version
+  - lock wait time
+  - load duration
+  - write duration
+  - stale lock recovery
+  - failure count
+
+  7. Tests
+
+  The swarm test is useful, but you need automated tests for:
+
+  - crashed writer
+  - stale lock
+  - source changes during DB read
+  - corrupted parquet
+  - corrupted metadata
+  - concurrent same-key clients
+  - concurrent different-key clients
+  - NFS-mounted directory, not only local disk
+
+  So: it is moving in the right direction, but I would call it a working prototype, not enterprise-ready yet. The most important next step is to make invalidation explicitly
+  SCN-based and add stale lock recovery.
