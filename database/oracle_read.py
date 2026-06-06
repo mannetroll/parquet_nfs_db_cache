@@ -5,6 +5,7 @@ import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
+from main import dbcache
 from nfs_cache.data.data_container import DataContainer
 
 DEFAULT_BATCH_SIZE = 10000
@@ -53,7 +54,7 @@ def _fetch_data_container(
     df = pl.concat(batches) if batches else pl.DataFrame(schema=headers)
     return DataContainer({"headers": headers, "data": df})
 
-
+@dbcache.sql_container_cache
 def read_data_container(sql: str) -> DataContainer:
     args = oracle_args()
     with connect(args) as connection:
