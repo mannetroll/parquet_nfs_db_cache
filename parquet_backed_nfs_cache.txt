@@ -1,4 +1,4 @@
-Implementation of a NFS cache for Containers that have
+Implementation of a NFS cache, backed with Parquet, for Containers that have
 internal Polars Dataframes, and use the fast Polars parquet reader.
 
 # implementation
