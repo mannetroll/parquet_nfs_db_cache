@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import ParamSpec
@@ -40,9 +41,7 @@ class DBCache:
             display_key = self._display_key(func, args_tuple, kwargs_dict)
             source_version = self._source_version(args_tuple, kwargs_dict)
             cache_path = self._cache_path(display_key)
-            part_path = cache_path.with_name(f"{cache_path.name}.part")
             meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
-            meta_part_path = cache_path.with_name(f"{cache_path.name}.meta.json.part")
             lock_path = cache_path.with_name(f"{cache_path.name}.lock")
 
             cached = self._read_if_cached(
@@ -80,11 +79,10 @@ class DBCache:
                 if cached is not None:
                     return cached
 
-                self._remove_file(part_path)
-                self._remove_file(meta_part_path)
                 self._remove_file(cache_path)
                 self._remove_file(meta_path)
-                part_path.touch()
+                part_path = self._part_path(cache_path)
+                meta_part_path = self._part_path(meta_path)
                 try:
                     data = func(*args, **kwargs)
                     self._write_data_container(
@@ -260,6 +258,11 @@ class DBCache:
             return self.cache_dir / "_relative" / f"{digest}{suffix}"
 
         return self.cache_dir.joinpath(*key_path.parts)
+
+    def _part_path(self, path: Path) -> Path:
+        return path.with_name(
+            f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
+        )
 
     @staticmethod
     def _path_arg(
