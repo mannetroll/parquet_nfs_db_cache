@@ -39,37 +39,14 @@ class DBCache:
             args_tuple = tuple(args)
             kwargs_dict = dict(kwargs)
             display_key = self._display_key(func, args_tuple, kwargs_dict)
-            source_version = self._source_version(args_tuple, kwargs_dict)
             cache_path = self._cache_path(display_key)
             meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
             lock_path = cache_path.with_name(f"{cache_path.name}.lock")
 
-            cached = self._read_if_cached(
-                cache_path,
-                meta_path,
-                display_key,
-                source_version,
-            )
-            if cached is not None:
-                return cached
-
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            while True:
-                try:
-                    lock_path.mkdir()
-                    break
-                except FileExistsError:
-                    cached = self._wait_for_cached(
-                        cache_path,
-                        meta_path,
-                        lock_path,
-                        display_key,
-                        source_version,
-                    )
-                    if cached is not None:
-                        return cached
-
+            self._acquire_lock(lock_path)
             try:
+                source_version = self._source_version(args_tuple, kwargs_dict)
                 cached = self._read_if_cached(
                     cache_path,
                     meta_path,
@@ -79,12 +56,16 @@ class DBCache:
                 if cached is not None:
                     return cached
 
-                self._remove_file(cache_path)
-                self._remove_file(meta_path)
                 part_path = self._part_path(cache_path)
                 meta_part_path = self._part_path(meta_path)
                 try:
-                    data = func(*args, **kwargs)
+                    data, source_version = self._load_stable(
+                        func,
+                        args,
+                        kwargs,
+                        args_tuple,
+                        kwargs_dict,
+                    )
                     self._write_data_container(
                         part_path,
                         cache_path,
@@ -106,6 +87,14 @@ class DBCache:
 
         return wrapper
 
+    def _acquire_lock(self, lock_path: Path) -> None:
+        while True:
+            try:
+                lock_path.mkdir()
+                return
+            except FileExistsError:
+                time.sleep(self.poll_seconds)
+
     def _read_if_cached(
         self,
         cache_path: Path,
@@ -119,38 +108,36 @@ class DBCache:
         if not self._is_current(meta_path, source_version):
             return None
 
-        print(f"Returning cached object: {display_key}...")
-        return self._read_data_container(cache_path)
-
-    def _wait_for_cached(
-        self,
-        cache_path: Path,
-        meta_path: Path,
-        lock_path: Path,
-        display_key: str,
-        source_version: str | None,
-    ) -> DataContainer | None:
-        while lock_path.exists():
-            cached = self._read_if_cached(
-                cache_path,
-                meta_path,
-                display_key,
-                source_version,
-            )
-            if cached is not None:
-                return cached
-            time.sleep(self.poll_seconds)
-
-        return self._read_if_cached(
-            cache_path,
-            meta_path,
-            display_key,
-            source_version,
+        version_preview = self._version_preview(source_version)
+        print(
+            f"Returning cached object: {display_key}{version_preview}...",
+            flush=True,
         )
+        try:
+            return self._read_data_container(cache_path)
+        except FileNotFoundError:
+            return None
 
     def _read_data_container(self, cache_path: Path) -> DataContainer:
         df = pl.read_parquet(cache_path)
         return DataContainer({"headers": tuple(df.columns), "data": df})
+
+    def _load_stable(
+        self,
+        func: Callable[P, DataContainer],
+        args: P.args,
+        kwargs: P.kwargs,
+        args_tuple: tuple[object, ...],
+        kwargs_dict: Mapping[str, object],
+    ) -> tuple[DataContainer, str | None]:
+        while True:
+            source_version_before = self._source_version(args_tuple, kwargs_dict)
+            data = func(*args, **kwargs)
+            source_version_after = self._source_version(args_tuple, kwargs_dict)
+            if source_version_before == source_version_after:
+                return data, source_version_after
+
+            print("Source changed while reading; retrying cold load...", flush=True)
 
     def _write_data_container(
         self,
@@ -229,6 +216,16 @@ class DBCache:
             return False
 
         return metadata.get("source_version") == source_version
+
+    @staticmethod
+    def _version_preview(source_version: str | None) -> str:
+        if source_version is None:
+            return ""
+
+        if source_version.startswith("sha256:"):
+            return f" sha={source_version.removeprefix('sha256:')[:40]}"
+
+        return f" version={source_version[:40]}"
 
     def _display_key(
         self,
