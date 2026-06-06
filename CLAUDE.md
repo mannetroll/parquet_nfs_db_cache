@@ -23,8 +23,15 @@ uv run python -m nfs_cache.util.generate_parquets [--seed N]   # (re)generate te
 `swarm.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
 `--generations`, `--n-rows`, `--cols`, `--data-dir`, `--cache-dir`); see README for a small example.
 
-There is no test suite, linter, or formatter configured. `main.py` and `swarm.py` are the de facto
-behavior checks.
+There is no test suite, linter, or formatter configured. `main.py`, `swarm.py`, and the
+`database.oracle_read` cold/warm logging are the de facto behavior checks.
+
+> **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
+> `Failed to initialize cache ... .git: Operation not permitted` because the sandbox blocks `.git`
+> files (uv's package cache contains some). Use `uv run --no-cache --no-sync ...` (the env is already
+> synced in `.venv`). This is a sandbox workaround, not a `UV_CACHE_DIR` override — do **not** set
+> `UV_CACHE_DIR`. Connecting to local Oracle on `localhost:1521` works from the sandbox; `.env` reads
+> are blocked, but the code falls back to defaults that match the Docker container.
 
 ### Oracle (optional, for the database source path)
 
@@ -40,21 +47,42 @@ from CLI flags, then overridden by a `.env` file (see `database/oracle_env.py`, 
 ```bash
 uv run -m database.oracle_write_container          # generate a DataContainer and load it into Oracle
 uv run -m database.oracle_write <parquet_path>     # load an existing parquet into Oracle
-uv run -m database.oracle_read "<SQL>"             # read SQL into a DataContainer (standalone main)
+uv run -m database.oracle_read "<SQL>"             # read SQL via the cache (logs Oracle miss vs cache hit)
 ```
+
+`oracle_read` goes *through the cache*: a miss logs `Serving from Oracle (cache miss): ...`, a hit
+logs `Returning cached object: sql/<TABLE>/<hash>.parquet version=<TABLE>@SCN:<scn>|ROWS:<n>`. To see a
+full cold -> warm -> reload cycle, run it twice, then `oracle_write_container` (advances the SCN), then
+run it again. Note: the `--host/--port/--user/...` flags on `oracle_read` only affect the (unused)
+direct path; the cached read takes connection settings from `oracle_args()` (defaults + `.env`).
 
 ## Architecture
 
 ### Core: `nfs_cache/db_cache.py` — `DBCache`
 
-The whole caching engine is one class exposing a decorator, `@dbcache.data_container_cache`, that
-wraps any `Callable[..., DataContainer]`. The wrapped function becomes the cold-load source; the
-decorator handles locking, invalidation, read, and write. Key mechanics to understand before changing:
+The whole caching engine is one class exposing **two decorators** that wrap any
+`Callable[..., DataContainer]`. The wrapped function is the cold-load source; the decorator handles
+locking, invalidation, read, and write. Both funnel into the shared `_run_cached(display_key,
+version_fn, load_fn)` flow — they differ only in how the cache key and source version are derived:
 
-- **Cache key / path** (`_display_key` + `_cache_path`): if the first positional arg (or `path` kwarg)
-  is a path-like, the file path *is* the key and the cache mirrors that path under `cache_dir`.
-  Absolute paths and paths containing `..` are hashed into `_absolute/` or `_relative/` subdirs.
-  Non-path args hash `(module, qualname, args, kwargs)` into a parquet filename.
+- `@dbcache.data_container_cache` — for file/in-process sources. Key and version come from the call
+  args (see below).
+- `@dbcache.sql_container_cache` — for SQL sources. First arg is the SQL string (optional
+  `return_cols=` kwarg). Key is `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read
+  from Oracle as `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
+  `DBCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
+
+`connect_factory` is an opaque `Callable[[], connection]` set on the `DBCache` instance (see
+`database/oracle_read.py`, which assigns `dbcache.connect_factory = lambda: connect(oracle_args())`).
+It is kept generic so `db_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
+
+Key mechanics to understand before changing:
+
+- **Cache key / path** (`_display_key` + `_cache_path`): for `data_container_cache`, if the first
+  positional arg (or `path` kwarg) is a path-like, the file path *is* the key and the cache mirrors
+  that path under `cache_dir`. Absolute paths and paths containing `..` are hashed into `_absolute/`
+  or `_relative/` subdirs. Non-path args hash `(module, qualname, args, kwargs)` into a parquet
+  filename.
 - **Locking** (`_acquire_lock`): a per-cache-key directory lock via `mkdir` (atomic on NFS),
   busy-waited with `poll_seconds`. Released with `rmdir` in a `finally`.
 - **Invalidation** (`_source_version` + `_is_current`): a sidecar `*.meta.json` stores a
@@ -79,12 +107,13 @@ decorator handles locking, invalidation, read, and write. Key mechanics to under
 Each `oracle_*.py` is a self-contained CLI. `oracle_write*.py` map Polars dtypes to Oracle DDL
 (`oracle_type`), validate identifiers (`oracle_identifier`), create/drop the table, and `executemany`
 in batches; they print `current_scn` before/after to demonstrate the SCN-based version token.
-`oracle_env.py` is a tiny dependency-free `.env` reader (no python-dotenv).
+`oracle_read.py` wires the SQL cache to Oracle (sets `connect_factory`, decorates with
+`sql_container_cache`). `oracle_env.py` is a tiny dependency-free `.env` reader (no python-dotenv);
+it degrades to defaults when `.env` is missing **or unreadable** rather than crashing.
 
 ### Caveats / WIP
 
-- `database/oracle_read.py` decorates with `@dbcache.sql_container_cache`, but `DBCache` currently
-  only defines `data_container_cache`. This is unfinished — that method does not exist yet, so
-  `oracle_read.py` will fail at import/decoration time until it's added or the decorator is renamed.
 - The README "Production Notes" list the known gaps (stale-lock recovery for crashed writers,
   validating `mkdir`/`os.replace` on a real NFS mount, structured metrics, failure tests).
+- `MAX(ORA_ROWSCN)` is block-level granularity unless the table was created `ROWDEPENDENCIES`; it is
+  monotonic enough as a version token, and the row count in the version string is the extra guard.

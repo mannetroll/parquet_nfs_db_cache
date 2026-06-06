@@ -20,8 +20,12 @@ ORACLE_ENV_FIELDS: Mapping[str, EnvField] = {
 def find_dotenv() -> Path | None:
     for path in (Path.cwd(), *Path.cwd().parents):
         dotenv_path = path / ".env"
-        if dotenv_path.is_file():
-            return dotenv_path
+        try:
+            if dotenv_path.is_file():
+                return dotenv_path
+        except OSError:
+            # Unreadable .env (e.g. restricted perms): treat as absent.
+            continue
     return None
 
 
@@ -30,8 +34,14 @@ def read_dotenv() -> dict[str, str]:
     if dotenv_path is None:
         return {}
 
+    try:
+        text = dotenv_path.read_text(encoding="utf-8")
+    except OSError:
+        # Fall back to defaults rather than crashing on an unreadable .env.
+        return {}
+
     values: dict[str, str] = {}
-    for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue

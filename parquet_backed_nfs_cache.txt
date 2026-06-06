@@ -1,118 +1,118 @@
-Implementation of a NFS cache, backed with Parquet, for Containers that have
-internal Polars Dataframes, and use the fast Polars parquet reader.
-When storing data in NFS cache use PyArroewr's ParquetWriter.
+Parquet-backed NFS cache for DataContainer objects
+==================================================
 
-# implementation
-# dbcache = DBCache(Path("__cache__/nfs"),")
+Goal
+----
 
-# decorators
-# #@dbcache.data_container_cache
+Cache DataContainer payloads whose data is a Polars DataFrame. Cold loads can
+come from slow sources such as Oracle or local parquet files. Warm loads read a
+Parquet cache file from an NFS-mounted shared directory with Polars.
 
-Run: $ uv run -m main
-To test cache, expected output when done:
-Reading: parquet/A_TEST_1048576.parquet...
-Returning cached object: parquet/A_TEST_1048576.parquet...
+Current foundation
+------------------
 
-The cache should be able to handle multiple clients.
-Writing to cache should be done threadsafe in parallel.
-If reading (cold) container data is slow (i.e. from a DB),
-create a .part file during reading, and rename it to the final name when done.
+- DBCache exposes two decorators:
+  - @dbcache.data_container_cache for file or function sources.
+  - @dbcache.sql_container_cache for Oracle SQL sources.
+- Data is persisted through pyarrow.parquet.ParquetWriter and read with
+  polars.read_parquet.
+- Cache writes use unique *.part files and os.replace for final replacement.
+- Each cache key has a mkdir-based lock directory to serialize writers.
+- Metadata sidecars store source_version for invalidation.
+- File sources use SHA-256 content hashes by default.
+- SQL sources use normalized SQL for cache keys and an Oracle version token:
+  COUNT(*) plus MAX(ORA_ROWSCN) for the detected FROM table.
+- Cold loads re-read the source version before and after loading and retry if
+  the source changed during the read.
+- main.py is the local smoke test. swarm.py exercises multi-process cache use.
 
-Cache key: __cache__/nfs/parquet/A_TEST_1048576.parquet will not work,
-if content hash(parquet/A_TEST_524288.parquet) like a SCN from Oracle,
-the cache need to invalide that item and restore.
+What is left to be enterprise-ready
+-----------------------------------
 
----------------------------------------------------------------------------
-I file: database/oracle_read.py, line 57
+This is a working prototype, not an enterprise-ready cache yet. The remaining
+work is mostly operational hardening, consistency guarantees, and automated
+failure coverage.
 
-Implement
-@dbcache.sql_container_cache
+1. Validate on the real NFS mount
 
-# Compute a cache key version stamp for a table.
-VERSION_SQL = "SELECT COUNT(*) AS n_rows, MAX(ORA ROWS) AS max_rows_scn FROM ${TABLE}"
+The design relies on mkdir for locks and os.replace for atomic replacement.
+Those are the right primitives, but behavior depends on NFS version, mount
+options, attribute caching, server implementation, and multi-host timing. Prove
+same-key and different-key behavior on the actual deployment NFS, not only on
+local disk.
 
-# Normalize SQL and cols for stable fingerprint
-normalized_sql = " " join(sqL_query.split()).strip().rstrip(";")
-cols_key = "|"-join(sorted(str(c).upper() for c in return_cols)) if return_cols else "-"
-table_name = "NO_TABLE"
-SCN = 0
-m = re. search( pattern: r"\bfrom\s+([^\s;]+)", normalized_sql, re. IGNORECASE)
-if m:
-    table_name = m. group (1)
-    # could be schema. table or ${TABLE}
-    table_key = table_name.split(".")[-1].upper()
-    cursor. execute(VERSION_SQL. replace(old: "${TABLE}", table_name))
-    row = cursor.fetchone()
-    if row and row[1] is not None:
-        scn = int(row[1])
+2. Add stale lock detection and recovery
 
-cache_key = f"{table_name.upper()}@SCN:{scn}
+Current lock directories can survive a crashed writer forever. Add lock
+metadata with hostname, PID, start time, UUID, and heartbeat or timestamp. Define
+when a lock may be broken, how competing clients break it safely, and how that
+event is logged.
 
----------------------------------------------------------------------------
+3. Strengthen the Oracle consistency model
 
-Not yet as production-grade enterprise cache.
+SQL invalidation now uses COUNT(*) and MAX(ORA_ROWSCN), but enterprise use needs
+a documented snapshot policy. Long reads should be tied to a consistent Oracle
+SCN, for example with flashback query or an equivalent transaction strategy.
+Also decide whether tables require ROWDEPENDENCIES, how deletes/truncates/DDL
+are detected, and how joins or multi-table SQL should produce a version token.
 
-  It is a decent prototype for:
+4. Make metadata authoritative
 
-  - multiple clients using the same NFS-backed cache
-  - one writer per cache key
-  - atomic parquet replacement via .part + os.replace
-  - invalidation by source version/hash
-  - avoiding partial cache reads
+Metadata currently records source_version only. Add enough information to
+validate the cache entry: parquet byte size, checksum, row count, schema hash,
+writer version, created time, and source key. Define the commit protocol clearly
+so readers can distinguish complete entries, stale entries, corrupt files, and
+interrupted writes.
 
-  But for Oracle + NFS + many clients, I would not trust it fully without these additions:
+5. Improve read concurrency
 
-  1. Use Oracle SCN, not file hash
+Reads and writes for the same key are currently serialized through one lock.
+That is safe but can limit throughput. Evaluate lock-free reads with stricter
+metadata ordering, or a read/write lock that allows many readers while blocking
+only writers and invalidations.
 
-  For DB data, the source version should be an Oracle SCN or equivalent snapshot/version token:
+6. Add observability
 
-  dbcache = DBCache(Path("__cache__/nfs"), source_version=lambda query_key, scn: scn)
+Replace print-based status with structured logs and metrics:
 
-  The cache should not hash data after loading from Oracle. It should ask Oracle for a stable SCN before loading and use that as the cache version.
+- cache hit, miss, reload, and invalidation counts
+- source version and cache key
+- lock wait time
+- cold load duration
+- parquet write/read duration
+- stale lock recovery count
+- corruption and retry failures
 
-  2. Stale lock handling
+7. Build automated failure tests
 
-  Current .lock directories can survive a crashed writer. Production needs lock metadata with PID/hostname/timestamp and timeout/recovery rules.
+The swarm run is useful, but enterprise readiness needs repeatable tests for:
 
-  3. NFS semantics need validation
+- crashed writer while holding a lock
+- crashed writer after writing parquet but before metadata
+- corrupted parquet file
+- corrupted metadata file
+- source changes during a cold DB read
+- concurrent same-key clients
+- concurrent different-key clients
+- NFS-mounted integration runs across multiple hosts or containers
 
-  mkdir lock and os.replace are usually the right primitives for NFS, but behavior depends on NFS version, mount options, cache settings, and server implementation. This needs
-  testing on your actual NFS.
+8. Add operational controls
 
-  4. Readers are serialized per key
+Add cache retention, quota management, cleanup of old *.part files, cache
+version migration, configurable compression, permissions checks, and clear runbook
+steps for clearing bad keys without deleting the whole cache.
 
-  Right now reads and writes for the same cache key both take the same lock. That is safe but can reduce throughput. Enterprise use may need a read/write lock or lock-free
-  reads with stronger metadata ordering.
+9. Harden configuration and security
 
-  5. Metadata ordering should be stricter
+Move secrets out of defaults for production, define required environment
+variables, restrict cache directory permissions, and audit SQL/table parsing.
+The current Oracle defaults are for local development only.
 
-  The cache writes parquet then metadata. That is mostly okay, but production should define exactly what is authoritative and possibly include parquet size/checksum in
-  metadata.
+Recommended next steps
+----------------------
 
-  6. Observability
-
-  You need structured logs/metrics:
-
-  - cache hit/miss/reload
-  - source version
-  - lock wait time
-  - load duration
-  - write duration
-  - stale lock recovery
-  - failure count
-
-  7. Tests
-
-  The swarm test is useful, but you need automated tests for:
-
-  - crashed writer
-  - stale lock
-  - source changes during DB read
-  - corrupted parquet
-  - corrupted metadata
-  - concurrent same-key clients
-  - concurrent different-key clients
-  - NFS-mounted directory, not only local disk
-
-  So: it is moving in the right direction, but I would call it a working prototype, not enterprise-ready yet. The most important next step is to make invalidation explicitly
-  SCN-based and add stale lock recovery.
+1. Implement lock metadata plus stale-lock recovery.
+2. Add pytest coverage for crash, corruption, and source-change cases.
+3. Validate mkdir and os.replace semantics on the target NFS mount.
+4. Upgrade Oracle reads to a documented consistent-SCN strategy.
+5. Add structured logging and metrics before broader rollout.
