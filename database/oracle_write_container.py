@@ -7,6 +7,7 @@ from pathlib import Path
 import oracledb
 import polars as pl
 
+from database.oracle_env import apply_dotenv
 from nfs_cache.data.data_container import DataContainer
 from nfs_cache.util.generate_parquets import ensure_one_parquet
 
@@ -152,7 +153,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--float-scale", type=float, default=5.0)
     parser.add_argument("--n-int-cols", type=int, default=4)
     parser.add_argument("--n-str-cols", type=int, default=8)
-    return parser.parse_args()
+    args = parser.parse_args()
+    apply_dotenv(args)
+    return args
 
 
 def main() -> int:

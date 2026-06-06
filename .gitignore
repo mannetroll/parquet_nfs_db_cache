@@ -11,6 +11,9 @@ dist/
 # uv
 .uv/
 
+# Local config
+.env
+
 # Testing / coverage
 .pytest_cache/
 .coverage

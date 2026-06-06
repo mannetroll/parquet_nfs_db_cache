@@ -7,6 +7,7 @@ from pathlib import Path
 import oracledb
 import polars as pl
 
+from database.oracle_env import apply_dotenv
 from nfs_cache.data.data_container import DataContainer
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
@@ -143,7 +144,9 @@ def parse_args() -> argparse.Namespace:
         help="Oracle table name. Defaults to the parquet file stem.",
     )
     parser.add_argument("--batch-size", type=int, default=1000)
-    return parser.parse_args()
+    args = parser.parse_args()
+    apply_dotenv(args)
+    return args
 
 
 def main() -> int:
