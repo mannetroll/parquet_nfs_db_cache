@@ -36,7 +36,7 @@ normalized_sql = " " join(sqL_query.split()).strip().rstrip(";")
 cols_key = "|"-join(sorted(str(c).upper() for c in return_cols)) if return_cols else "-"
 table_name = "NO_TABLE"
 SCN = 0
-m = re. search( pattern: r"|bfrom|s+([*\s;]+)", normalized_sql, re. IGNORECASE)
+m = re. search( pattern: r"\bfrom\s+([^\s;]+)", normalized_sql, re. IGNORECASE)
 if m:
     table_name = m. group (1)
     # could be schema. table or ${TABLE}

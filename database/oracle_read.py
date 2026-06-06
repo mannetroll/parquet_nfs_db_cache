@@ -54,8 +54,15 @@ def _fetch_data_container(
     df = pl.concat(batches) if batches else pl.DataFrame(schema=headers)
     return DataContainer({"headers": headers, "data": df})
 
+
+# Let the cache read the source version (MAX(ORA_ROWSCN)) on its own connection.
+dbcache.connect_factory = lambda: connect(oracle_args())
+
+
 @dbcache.sql_container_cache
 def read_data_container(sql: str) -> DataContainer:
+    # This body only runs on a cache miss, so reaching it means a live read.
+    print(f"Serving from Oracle (cache miss): {sql}", flush=True)
     args = oracle_args()
     with connect(args) as connection:
         return _fetch_data_container(

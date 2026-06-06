@@ -4,6 +4,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -19,16 +20,29 @@ P = ParamSpec("P")
 
 
 class DBCache:
+    # Cache-key version stamp for a table source. ORA_ROWSCN advances on any
+    # change to a row's block, so MAX(ORA_ROWSCN) is a cheap version token; the
+    # row count guards against table swaps that do not advance the SCN.
+    VERSION_SQL = (
+        "SELECT COUNT(*) AS N_ROWS, MAX(ORA_ROWSCN) AS MAX_ROWSCN FROM {table}"
+    )
+    _FROM_RE = re.compile(r"\bfrom\s+([A-Za-z0-9_$#.\"]+)", re.IGNORECASE)
+
     def __init__(
         self,
         cache_dir: Path,
         *,
         poll_seconds: float = 0.1,
         source_version: Callable[..., object] | None = None,
+        connect_factory: Callable[[], object] | None = None,
     ) -> None:
         self.cache_dir = cache_dir
         self.poll_seconds = poll_seconds
         self.source_version = source_version
+        # Opaque callable returning a DB connection (anything with a
+        # context-manager `cursor()`); used by `sql_container_cache` to read the
+        # source version. Kept generic so the cache does not depend on oracledb.
+        self.connect_factory = connect_factory
 
     def data_container_cache(
         self,
@@ -39,53 +53,76 @@ class DBCache:
             args_tuple = tuple(args)
             kwargs_dict = dict(kwargs)
             display_key = self._display_key(func, args_tuple, kwargs_dict)
-            cache_path = self._cache_path(display_key)
-            meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
-            lock_path = cache_path.with_name(f"{cache_path.name}.lock")
-
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self._acquire_lock(lock_path)
-            try:
-                source_version = self._source_version(args_tuple, kwargs_dict)
-                cached = self._read_if_cached(
-                    cache_path,
-                    meta_path,
-                    display_key,
-                    source_version,
-                )
-                if cached is not None:
-                    return cached
-
-                part_path = self._part_path(cache_path)
-                meta_part_path = self._part_path(meta_path)
-                try:
-                    data, source_version = self._load_stable(
-                        func,
-                        args,
-                        kwargs,
-                        args_tuple,
-                        kwargs_dict,
-                    )
-                    self._write_data_container(
-                        part_path,
-                        cache_path,
-                        meta_part_path,
-                        meta_path,
-                        source_version,
-                        data,
-                    )
-                    return data
-                except Exception:
-                    self._remove_file(part_path)
-                    self._remove_file(meta_part_path)
-                    raise
-            finally:
-                try:
-                    lock_path.rmdir()
-                except FileNotFoundError:
-                    pass
+            return self._run_cached(
+                display_key,
+                lambda: self._source_version(args_tuple, kwargs_dict),
+                lambda: func(*args, **kwargs),
+            )
 
         return wrapper
+
+    def sql_container_cache(
+        self,
+        func: Callable[P, DataContainer],
+    ) -> Callable[P, DataContainer]:
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
+            sql = args[0] if args else kwargs["sql"]
+            return_cols = kwargs.get("return_cols")
+            display_key = self._sql_display_key(str(sql), return_cols)
+            return self._run_cached(
+                display_key,
+                lambda: self._sql_source_version(str(sql)),
+                lambda: func(*args, **kwargs),
+            )
+
+        return wrapper
+
+    def _run_cached(
+        self,
+        display_key: str,
+        version_fn: Callable[[], str | None],
+        load_fn: Callable[[], DataContainer],
+    ) -> DataContainer:
+        cache_path = self._cache_path(display_key)
+        meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
+        lock_path = cache_path.with_name(f"{cache_path.name}.lock")
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._acquire_lock(lock_path)
+        try:
+            source_version = version_fn()
+            cached = self._read_if_cached(
+                cache_path,
+                meta_path,
+                display_key,
+                source_version,
+            )
+            if cached is not None:
+                return cached
+
+            part_path = self._part_path(cache_path)
+            meta_part_path = self._part_path(meta_path)
+            try:
+                data, source_version = self._load_stable(version_fn, load_fn)
+                self._write_data_container(
+                    part_path,
+                    cache_path,
+                    meta_part_path,
+                    meta_path,
+                    source_version,
+                    data,
+                )
+                return data
+            except Exception:
+                self._remove_file(part_path)
+                self._remove_file(meta_part_path)
+                raise
+        finally:
+            try:
+                lock_path.rmdir()
+            except FileNotFoundError:
+                pass
 
     def _acquire_lock(self, lock_path: Path) -> None:
         while True:
@@ -124,16 +161,13 @@ class DBCache:
 
     def _load_stable(
         self,
-        func: Callable[P, DataContainer],
-        args: P.args,
-        kwargs: P.kwargs,
-        args_tuple: tuple[object, ...],
-        kwargs_dict: Mapping[str, object],
+        version_fn: Callable[[], str | None],
+        load_fn: Callable[[], DataContainer],
     ) -> tuple[DataContainer, str | None]:
         while True:
-            source_version_before = self._source_version(args_tuple, kwargs_dict)
-            data = func(*args, **kwargs)
-            source_version_after = self._source_version(args_tuple, kwargs_dict)
+            source_version_before = version_fn()
+            data = load_fn()
+            source_version_after = version_fn()
             if source_version_before == source_version_after:
                 return data, source_version_after
 
@@ -205,6 +239,51 @@ class DBCache:
                 digest.update(chunk)
 
         return digest.hexdigest()
+
+    @staticmethod
+    def _normalize_sql(sql: str) -> str:
+        return " ".join(sql.split()).strip().rstrip(";")
+
+    def _table_from_sql(self, sql: str) -> str | None:
+        match = self._FROM_RE.search(sql)
+        if match is None:
+            return None
+        # Strip quoting; keep schema.table as-is for the version query.
+        return match.group(1).strip('"')
+
+    def _sql_display_key(
+        self,
+        sql: str,
+        return_cols: object | None = None,
+    ) -> str:
+        normalized_sql = self._normalize_sql(sql)
+        if return_cols:
+            cols_key = "-".join(sorted(str(col).upper() for col in return_cols))
+        else:
+            cols_key = "-"
+        table_name = (self._table_from_sql(normalized_sql) or "NO_TABLE").upper()
+        fingerprint = hashlib.sha256(
+            f"{normalized_sql}|{cols_key}".encode("utf-8")
+        ).hexdigest()
+        return f"sql/{table_name}/{fingerprint}.parquet"
+
+    def _sql_source_version(self, sql: str) -> str | None:
+        if self.connect_factory is None:
+            return None
+
+        table_name = self._table_from_sql(self._normalize_sql(sql))
+        if table_name is None:
+            return None
+
+        version_query = self.VERSION_SQL.format(table=table_name)
+        with self.connect_factory() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(version_query)
+                row = cursor.fetchone()
+
+        n_rows = row[0] if row else 0
+        scn = int(row[1]) if row and row[1] is not None else 0
+        return f"{table_name.upper()}@SCN:{scn}|ROWS:{n_rows}"
 
     def _is_current(self, meta_path: Path, source_version: str | None) -> bool:
         if source_version is None:
