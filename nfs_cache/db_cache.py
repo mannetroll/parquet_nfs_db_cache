@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import json
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -17,9 +18,16 @@ P = ParamSpec("P")
 
 
 class DBCache:
-    def __init__(self, cache_dir: Path, *, poll_seconds: float = 0.1) -> None:
+    def __init__(
+        self,
+        cache_dir: Path,
+        *,
+        poll_seconds: float = 0.1,
+        source_version: Callable[..., object] | None = None,
+    ) -> None:
         self.cache_dir = cache_dir
         self.poll_seconds = poll_seconds
+        self.source_version = source_version
 
     def data_container_cache(
         self,
@@ -27,12 +35,22 @@ class DBCache:
     ) -> Callable[P, DataContainer]:
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
-            display_key = self._display_key(func, tuple(args), dict(kwargs))
+            args_tuple = tuple(args)
+            kwargs_dict = dict(kwargs)
+            display_key = self._display_key(func, args_tuple, kwargs_dict)
+            source_version = self._source_version(args_tuple, kwargs_dict)
             cache_path = self._cache_path(display_key)
             part_path = cache_path.with_name(f"{cache_path.name}.part")
+            meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
+            meta_part_path = cache_path.with_name(f"{cache_path.name}.meta.json.part")
             lock_path = cache_path.with_name(f"{cache_path.name}.lock")
 
-            cached = self._read_if_cached(cache_path, display_key)
+            cached = self._read_if_cached(
+                cache_path,
+                meta_path,
+                display_key,
+                source_version,
+            )
             if cached is not None:
                 return cached
 
@@ -42,23 +60,45 @@ class DBCache:
                     lock_path.mkdir()
                     break
                 except FileExistsError:
-                    cached = self._wait_for_cached(cache_path, lock_path, display_key)
+                    cached = self._wait_for_cached(
+                        cache_path,
+                        meta_path,
+                        lock_path,
+                        display_key,
+                        source_version,
+                    )
                     if cached is not None:
                         return cached
 
             try:
-                cached = self._read_if_cached(cache_path, display_key)
+                cached = self._read_if_cached(
+                    cache_path,
+                    meta_path,
+                    display_key,
+                    source_version,
+                )
                 if cached is not None:
                     return cached
 
                 self._remove_file(part_path)
+                self._remove_file(meta_part_path)
+                self._remove_file(cache_path)
+                self._remove_file(meta_path)
                 part_path.touch()
                 try:
                     data = func(*args, **kwargs)
-                    self._write_data_container(part_path, cache_path, data)
+                    self._write_data_container(
+                        part_path,
+                        cache_path,
+                        meta_part_path,
+                        meta_path,
+                        source_version,
+                        data,
+                    )
                     return data
                 except Exception:
                     self._remove_file(part_path)
+                    self._remove_file(meta_part_path)
                     raise
             finally:
                 try:
@@ -68,8 +108,17 @@ class DBCache:
 
         return wrapper
 
-    def _read_if_cached(self, cache_path: Path, display_key: str) -> DataContainer | None:
+    def _read_if_cached(
+        self,
+        cache_path: Path,
+        meta_path: Path,
+        display_key: str,
+        source_version: str | None,
+    ) -> DataContainer | None:
         if not self._is_complete(cache_path):
+            return None
+
+        if not self._is_current(meta_path, source_version):
             return None
 
         print(f"Returning cached object: {display_key}...")
@@ -78,16 +127,28 @@ class DBCache:
     def _wait_for_cached(
         self,
         cache_path: Path,
+        meta_path: Path,
         lock_path: Path,
         display_key: str,
+        source_version: str | None,
     ) -> DataContainer | None:
         while lock_path.exists():
-            cached = self._read_if_cached(cache_path, display_key)
+            cached = self._read_if_cached(
+                cache_path,
+                meta_path,
+                display_key,
+                source_version,
+            )
             if cached is not None:
                 return cached
             time.sleep(self.poll_seconds)
 
-        return self._read_if_cached(cache_path, display_key)
+        return self._read_if_cached(
+            cache_path,
+            meta_path,
+            display_key,
+            source_version,
+        )
 
     def _read_data_container(self, cache_path: Path) -> DataContainer:
         df = pl.read_parquet(cache_path)
@@ -97,6 +158,9 @@ class DBCache:
         self,
         part_path: Path,
         cache_path: Path,
+        meta_part_path: Path,
+        meta_path: Path,
+        source_version: str | None,
         data: DataContainer,
     ) -> None:
         df = data.data.rows_data_pl
@@ -109,10 +173,64 @@ class DBCache:
         try:
             with pq.ParquetWriter(str(part_path), table.schema) as writer:
                 writer.write_table(table)
+            self._write_metadata(meta_part_path, source_version)
             os.replace(part_path, cache_path)
+            if source_version is not None:
+                os.replace(meta_part_path, meta_path)
         except Exception:
             self._remove_file(part_path)
+            self._remove_file(meta_part_path)
             raise
+
+    def _write_metadata(
+        self,
+        meta_part_path: Path,
+        source_version: str | None,
+    ) -> None:
+        if source_version is None:
+            return
+
+        metadata = {"source_version": source_version}
+        meta_part_path.write_text(
+            json.dumps(metadata, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _source_version(
+        self,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> str | None:
+        if self.source_version is not None:
+            version = self.source_version(*args, **kwargs)
+            return None if version is None else str(version)
+
+        path_arg = self._path_arg(args, kwargs)
+        if isinstance(path_arg, (str, os.PathLike)):
+            path = Path(path_arg)
+            if path.is_file():
+                return f"sha256:{self._file_hash(path)}"
+
+        return None
+
+    def _file_hash(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+
+        return digest.hexdigest()
+
+    def _is_current(self, meta_path: Path, source_version: str | None) -> bool:
+        if source_version is None:
+            return True
+
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False
+
+        return metadata.get("source_version") == source_version
 
     def _display_key(
         self,
@@ -120,7 +238,7 @@ class DBCache:
         args: tuple[object, ...],
         kwargs: Mapping[str, object],
     ) -> str:
-        path_arg = args[0] if args else kwargs.get("path")
+        path_arg = self._path_arg(args, kwargs)
         if isinstance(path_arg, (str, os.PathLike)):
             return os.fspath(path_arg)
 
@@ -142,6 +260,13 @@ class DBCache:
             return self.cache_dir / "_relative" / f"{digest}{suffix}"
 
         return self.cache_dir.joinpath(*key_path.parts)
+
+    @staticmethod
+    def _path_arg(
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> object | None:
+        return args[0] if args else kwargs.get("path")
 
     @staticmethod
     def _is_complete(path: Path) -> bool:

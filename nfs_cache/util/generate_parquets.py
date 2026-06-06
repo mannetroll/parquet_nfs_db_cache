@@ -1,4 +1,5 @@
 import argparse
+import os
 from pathlib import Path
 
 import polars as pl
@@ -12,7 +13,7 @@ def _generate_df_prefixed(
         *,
         n_rows: int,
         n_cols: int,
-        seed: int,
+        seed: int | None,
         prefix: str,
         float_scale: float,
         n_int_cols: int,
@@ -75,7 +76,7 @@ def ensure_one_parquet(
         prefix: str,
         n_rows: int,
         n_cols: int,
-        seed: int,
+        seed: int | None,
         float_scale: float,
         n_int_cols: int,
         n_str_cols: int,
@@ -85,19 +86,18 @@ def ensure_one_parquet(
     out_name = _with_prefix(prefix, base_name)
     out_path = out_dir / out_name
 
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return out_path
-
     df = _generate_df_prefixed(
         n_rows=int(n_rows),
         n_cols=int(n_cols),
-        seed=int(seed),
+        seed=seed,
         prefix=prefix,
         float_scale=float(float_scale),
         n_int_cols=int(n_int_cols),
         n_str_cols=int(n_str_cols),
     )
-    df.write_parquet(str(out_path), compression="uncompressed", statistics="full")
+    part_path = out_path.with_name(f"{out_path.name}.part")
+    df.write_parquet(str(part_path), compression="uncompressed", statistics="full")
+    os.replace(part_path, out_path)
     return out_path
 
 
@@ -107,6 +107,7 @@ def underscore_int(n: int) -> str:
 
 def main(args) -> int:
     data_dir = Path(args.data_dir)
+    seed = None if args.seed is None else int(args.seed)
     for N in range(int(args.n_min), int(args.n_max) + 1):
         n_rows = 1 << N
         base_name = f"TEST_{n_rows}.parquet"
@@ -119,7 +120,7 @@ def main(args) -> int:
             prefix="A_",
             n_rows=n_rows,
             n_cols=int(args.cols),
-            seed=int(args.seed),
+            seed=seed,
             float_scale=float(args.float_scale),
             n_int_cols=int(args.n_int_cols),
             n_str_cols=int(args.n_str_cols),
@@ -131,7 +132,7 @@ def main(args) -> int:
             prefix="B_",
             n_rows=n_rows,
             n_cols=int(args.cols),
-            seed=int(args.seed),
+            seed=seed,
             float_scale=float(args.float_scale),
             n_int_cols=int(args.n_int_cols),
             n_str_cols=int(args.n_str_cols),
@@ -142,11 +143,11 @@ def main(args) -> int:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n-min", type=int, default=19)
+    ap.add_argument("--n-min", type=int, default=20)
     ap.add_argument("--n-max", type=int, default=20)
     ap.add_argument("--cols", type=int, default=20)
     ap.add_argument("--data-dir", default="../../parquet")
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--float-scale", type=float, default=5.0)
     ap.add_argument("--n-int-cols", type=int, default=4)
     ap.add_argument("--n-str-cols", type=int, default=8)
