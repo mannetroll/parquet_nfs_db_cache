@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ParamSpec
 
@@ -17,6 +18,9 @@ import pyarrow.parquet as pq
 from nfs_cache.data.data_container import DataContainer
 
 P = ParamSpec("P")
+
+CACHE_METADATA_VERSION = 1
+CACHE_WRITER_VERSION = "parquet_nfs_db_cache.dbcache.v1"
 
 
 class DBCache:
@@ -110,6 +114,7 @@ class DBCache:
                     cache_path,
                     meta_part_path,
                     meta_path,
+                    display_key,
                     source_version,
                     data,
                 )
@@ -139,20 +144,28 @@ class DBCache:
         display_key: str,
         source_version: str | None,
     ) -> DataContainer | None:
-        if not self._is_complete(cache_path):
+        metadata = self._read_valid_metadata(
+            cache_path,
+            meta_path,
+            display_key,
+            source_version,
+        )
+        if metadata is None:
             return None
 
-        if not self._is_current(meta_path, source_version):
-            return None
-
-        version_preview = self._version_preview(source_version)
+        version_preview = self._version_preview(metadata.get("source_version"))
         print(
             f"Returning cached object: {display_key}{version_preview}...",
             flush=True,
         )
         try:
             return self._read_data_container(cache_path)
-        except FileNotFoundError:
+        except Exception as exc:
+            print(
+                f"Ignoring corrupt cache entry: {display_key}: "
+                f"parquet read failed: {exc}",
+                flush=True,
+            )
             return None
 
     def _read_data_container(self, cache_path: Path) -> DataContainer:
@@ -179,6 +192,7 @@ class DBCache:
         cache_path: Path,
         meta_part_path: Path,
         meta_path: Path,
+        display_key: str,
         source_version: str | None,
         data: DataContainer,
     ) -> None:
@@ -192,10 +206,22 @@ class DBCache:
         try:
             with pq.ParquetWriter(str(part_path), table.schema) as writer:
                 writer.write_table(table)
-            self._write_metadata(meta_part_path, source_version)
+            self._write_metadata(
+                meta_part_path,
+                display_key=display_key,
+                cache_path=cache_path,
+                parquet_path=part_path,
+                source_version=source_version,
+                row_count=table.num_rows,
+                column_count=table.num_columns,
+                schema=table.schema,
+            )
+            # Commit protocol: metadata is authoritative. A cache entry is not
+            # complete until the final metadata sidecar exists and matches the
+            # final parquet bytes. Crashes before this point leave an entry that
+            # readers reject as incomplete or corrupt and reload.
             os.replace(part_path, cache_path)
-            if source_version is not None:
-                os.replace(meta_part_path, meta_path)
+            os.replace(meta_part_path, meta_path)
         except Exception:
             self._remove_file(part_path)
             self._remove_file(meta_part_path)
@@ -204,14 +230,36 @@ class DBCache:
     def _write_metadata(
         self,
         meta_part_path: Path,
+        *,
+        display_key: str,
+        cache_path: Path,
+        parquet_path: Path,
         source_version: str | None,
+        row_count: int,
+        column_count: int,
+        schema: object,
     ) -> None:
-        if source_version is None:
-            return
-
-        metadata = {"source_version": source_version}
+        schema_metadata = self._schema_metadata(schema)
+        metadata = {
+            "metadata_version": CACHE_METADATA_VERSION,
+            "writer_version": CACHE_WRITER_VERSION,
+            "created_at": datetime.now(UTC).isoformat(),
+            "source_key": display_key,
+            "source_version": source_version,
+            "parquet": {
+                "file_name": cache_path.name,
+                "size_bytes": parquet_path.stat().st_size,
+                "sha256": self._file_hash(parquet_path),
+            },
+            "data": {
+                "row_count": row_count,
+                "column_count": column_count,
+                "schema_hash": self._schema_hash(schema_metadata),
+                "schema": schema_metadata,
+            },
+        }
         meta_part_path.write_text(
-            json.dumps(metadata, sort_keys=True),
+            json.dumps(metadata, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -285,16 +333,121 @@ class DBCache:
         scn = int(row[1]) if row and row[1] is not None else 0
         return f"{table_name.upper()}@SCN:{scn}|ROWS:{n_rows}"
 
-    def _is_current(self, meta_path: Path, source_version: str | None) -> bool:
-        if source_version is None:
-            return True
+    def _read_valid_metadata(
+        self,
+        cache_path: Path,
+        meta_path: Path,
+        display_key: str,
+        source_version: str | None,
+    ) -> dict[str, object] | None:
+        if not self._is_complete(cache_path):
+            return None
 
         try:
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return False
+        except FileNotFoundError:
+            print(
+                f"Ignoring incomplete cache entry: {display_key}: "
+                "missing metadata",
+                flush=True,
+            )
+            return None
+        except json.JSONDecodeError as exc:
+            print(
+                f"Ignoring corrupt cache entry: {display_key}: "
+                f"metadata is not valid JSON: {exc}",
+                flush=True,
+            )
+            return None
 
-        return metadata.get("source_version") == source_version
+        reason = self._metadata_reject_reason(
+            metadata,
+            cache_path,
+            display_key,
+            source_version,
+        )
+        if reason is not None:
+            print(f"Ignoring cache entry: {display_key}: {reason}", flush=True)
+            return None
+
+        return metadata
+
+    def _metadata_reject_reason(
+        self,
+        metadata: object,
+        cache_path: Path,
+        display_key: str,
+        source_version: str | None,
+    ) -> str | None:
+        if not isinstance(metadata, dict):
+            return "corrupt metadata: top-level JSON must be an object"
+
+        if metadata.get("metadata_version") != CACHE_METADATA_VERSION:
+            return "unsupported metadata version"
+
+        if metadata.get("writer_version") != CACHE_WRITER_VERSION:
+            return "unsupported writer version"
+
+        if metadata.get("source_key") != display_key:
+            return "source key mismatch"
+
+        if "source_version" not in metadata:
+            return "corrupt metadata: missing source version"
+
+        if metadata.get("source_version") != source_version:
+            return "stale source version"
+
+        parquet_meta = metadata.get("parquet")
+        if not isinstance(parquet_meta, dict):
+            return "corrupt metadata: missing parquet section"
+
+        if parquet_meta.get("file_name") != cache_path.name:
+            return "parquet file name mismatch"
+
+        try:
+            stat = cache_path.stat()
+        except FileNotFoundError:
+            return "incomplete entry: missing parquet"
+
+        if stat.st_size <= 0:
+            return "incomplete entry: empty parquet"
+
+        if parquet_meta.get("size_bytes") != stat.st_size:
+            return "parquet size mismatch"
+
+        expected_sha = parquet_meta.get("sha256")
+        if not isinstance(expected_sha, str) or len(expected_sha) != 64:
+            return "corrupt metadata: invalid parquet checksum"
+
+        try:
+            actual_sha = self._file_hash(cache_path)
+        except OSError as exc:
+            return f"cannot read parquet bytes: {exc}"
+
+        if actual_sha != expected_sha:
+            return "parquet checksum mismatch"
+
+        data_meta = metadata.get("data")
+        if not isinstance(data_meta, dict):
+            return "corrupt metadata: missing data section"
+
+        try:
+            parquet_file = pq.ParquetFile(str(cache_path))
+        except Exception as exc:
+            return f"corrupt parquet: unreadable metadata: {exc}"
+
+        row_count = data_meta.get("row_count")
+        if row_count != parquet_file.metadata.num_rows:
+            return "parquet row count mismatch"
+
+        schema_metadata = self._schema_metadata(parquet_file.schema_arrow)
+        if data_meta.get("column_count") != len(schema_metadata):
+            return "parquet column count mismatch"
+
+        if data_meta.get("schema_hash") != self._schema_hash(schema_metadata):
+            return "parquet schema hash mismatch"
+
+        return None
 
     @staticmethod
     def _version_preview(source_version: str | None) -> str:
@@ -339,6 +492,26 @@ class DBCache:
         return path.with_name(
             f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
         )
+
+    @staticmethod
+    def _schema_metadata(schema: object) -> list[dict[str, object]]:
+        return [
+            {
+                "name": field.name,
+                "type": str(field.type),
+                "nullable": bool(field.nullable),
+            }
+            for field in schema
+        ]
+
+    @staticmethod
+    def _schema_hash(schema_metadata: list[dict[str, object]]) -> str:
+        encoded = json.dumps(
+            schema_metadata,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _path_arg(

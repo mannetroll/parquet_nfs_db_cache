@@ -1,12 +1,14 @@
+import shutil
 from pathlib import Path
+
+import polars as pl
 
 from nfs_cache.data.data_container import DataContainer
 from nfs_cache.db_cache import DBCache
 from nfs_cache.util.generate_parquets import ensure_one_parquet
 
-import polars as pl
-
-dbcache = DBCache(Path("__cache__/nfs"))
+CACHE_ROOT = Path("__cache__")
+dbcache = DBCache(CACHE_ROOT / "nfs")
 DATA_DIR = Path("parquet")
 N_ROWS = 1_048_576
 DATA_PATH = DATA_DIR / f"A_TEST_{N_ROWS}.parquet"
@@ -35,7 +37,28 @@ def generate_parquet() -> Path:
     )
 
 
+def clear_cache_root() -> None:
+    if not CACHE_ROOT.exists():
+        return
+
+    if not CACHE_ROOT.is_dir():
+        print(f"Clearing cache file: {CACHE_ROOT}")
+        CACHE_ROOT.unlink()
+        return
+
+    print(f"Clearing cache: {CACHE_ROOT}")
+    for path in CACHE_ROOT.iterdir():
+        if path.name == ".gitignore":
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def main():
+    clear_cache_root()
+
     path = generate_parquet()
 
     # cache cold, execute: load_data_container

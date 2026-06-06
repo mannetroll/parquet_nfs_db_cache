@@ -18,7 +18,12 @@ Current foundation
   polars.read_parquet.
 - Cache writes use unique *.part files and os.replace for final replacement.
 - Each cache key has a mkdir-based lock directory to serialize writers.
-- Metadata sidecars store source_version for invalidation.
+- Metadata sidecars are authoritative commit markers. They store source_key,
+  source_version, parquet byte size, parquet SHA-256, row count, column count,
+  schema hash, writer version, and created_at.
+- Readers reject cache entries with missing, stale, unsupported, or corrupt
+  metadata, and they validate parquet size/checksum/row count/schema before
+  returning a warm hit.
 - File sources use SHA-256 content hashes by default.
 - SQL sources use normalized SQL for cache keys and an Oracle version token:
   COUNT(*) plus MAX(ORA_ROWSCN) for the detected FROM table.
@@ -56,22 +61,14 @@ SCN, for example with flashback query or an equivalent transaction strategy.
 Also decide whether tables require ROWDEPENDENCIES, how deletes/truncates/DDL
 are detected, and how joins or multi-table SQL should produce a version token.
 
-4. Make metadata authoritative
-
-Metadata currently records source_version only. Add enough information to
-validate the cache entry: parquet byte size, checksum, row count, schema hash,
-writer version, created time, and source key. Define the commit protocol clearly
-so readers can distinguish complete entries, stale entries, corrupt files, and
-interrupted writes.
-
-5. Improve read concurrency
+4. Improve read concurrency
 
 Reads and writes for the same key are currently serialized through one lock.
 That is safe but can limit throughput. Evaluate lock-free reads with stricter
 metadata ordering, or a read/write lock that allows many readers while blocking
 only writers and invalidations.
 
-6. Add observability
+5. Add observability
 
 Replace print-based status with structured logs and metrics:
 
@@ -83,26 +80,26 @@ Replace print-based status with structured logs and metrics:
 - stale lock recovery count
 - corruption and retry failures
 
-7. Build automated failure tests
+6. Build automated failure tests
 
-The swarm run is useful, but enterprise readiness needs repeatable tests for:
+The swarm run and metadata unit tests are useful, but enterprise readiness needs
+broader repeatable tests for:
 
 - crashed writer while holding a lock
 - crashed writer after writing parquet but before metadata
-- corrupted parquet file
-- corrupted metadata file
+- more corrupted parquet and metadata variants
 - source changes during a cold DB read
 - concurrent same-key clients
 - concurrent different-key clients
 - NFS-mounted integration runs across multiple hosts or containers
 
-8. Add operational controls
+7. Add operational controls
 
 Add cache retention, quota management, cleanup of old *.part files, cache
 version migration, configurable compression, permissions checks, and clear runbook
 steps for clearing bad keys without deleting the whole cache.
 
-9. Harden configuration and security
+8. Harden configuration and security
 
 Move secrets out of defaults for production, define required environment
 variables, restrict cache directory permissions, and audit SQL/table parsing.
@@ -112,7 +109,7 @@ Recommended next steps
 ----------------------
 
 1. Implement lock metadata plus stale-lock recovery.
-2. Add pytest coverage for crash, corruption, and source-change cases.
+2. Broaden automated coverage for crash, corruption, and source-change cases.
 3. Validate mkdir and os.replace semantics on the target NFS mount.
 4. Upgrade Oracle reads to a documented consistent-SCN strategy.
 5. Add structured logging and metrics before broader rollout.
