@@ -1,12 +1,14 @@
 from pathlib import Path
 
 from nfs_cache.data.data_container import DataContainer
+from nfs_cache.db_cache import DBCache
 
 import polars as pl
 
-# dbcache = DBCache(Path("/nfs/cache/parquet"),")
+dbcache = DBCache(Path("__cache__/nfs"))
 
-#@dbcache.data_container_cache
+
+@dbcache.data_container_cache
 def load_data_container(path: Path) -> DataContainer:
     print(f"Reading: {path}...")
     df = pl.read_parquet(path)
@@ -15,12 +17,10 @@ def load_data_container(path: Path) -> DataContainer:
 
 def main():
     # cache cold, execute: load_data_container
-    call1 = load_data_container(Path("parquet/A_TEST_1048576.parquet"))
-    print(call1.data.rows_data_pl)
+    load_data_container(Path("parquet/A_TEST_1048576.parquet"))
 
     # cache warm, get DataContainer from NFS cache
-    call2 = load_data_container(Path("parquet/A_TEST_1048576.parquet"))
-    print(call2.data.rows_data_pl)
+    load_data_container(Path("parquet/A_TEST_1048576.parquet"))
 
 
 if __name__ == "__main__":

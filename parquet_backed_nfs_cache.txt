@@ -18,3 +18,6 @@ Writing to cache should be done threadsafe in parallel.
 If reading (cold) container data is slow (i.e. from a DB),
 create a .part file during reading, and rename it to the final name when done.
 
+Cache key: __cache__/nfs/parquet/A_TEST_1048576.parquet will not work,
+if content hash(parquet/A_TEST_524288.parquet) like a SCN from Oracle,
+the cache need to invalide that item and restore.

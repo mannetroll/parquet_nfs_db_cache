@@ -15,6 +15,7 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+__cache__/
 
 # Editor / OS
 .idea/
