@@ -1,5 +1,6 @@
 Implementation of a NFS cache, backed with Parquet, for Containers that have
 internal Polars Dataframes, and use the fast Polars parquet reader.
+When storing data in NFS cache use PyArroewr's ParquetWriter.
 
 # implementation
 # dbcache = DBCache(Path("__cache__/nfs"),")
