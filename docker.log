@@ -1,0 +1,7 @@
+docker rm -f oracle-scn
+docker volume rm oracle_scn_data
+./build_and_run.sh
+
+docker ps --filter name=oracle-scn
+
+docker logs -f oracle-scn
