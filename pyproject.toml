@@ -11,6 +11,7 @@ requires-python = ">=3.13,<3.14"
 
 dependencies = [
   "numpy>=2.4,<3",
+  "oracledb>=3,<4",
   "polars>=1.38.1,<2",
   "pyarrow>=23.0.1",
   "matplotlib",
@@ -19,5 +20,4 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nfs_cache"]
-
+packages = ["database", "nfs_cache"]

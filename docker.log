@@ -5,3 +5,5 @@ docker volume rm oracle_scn_data
 docker ps --filter name=oracle-scn
 
 docker logs -f oracle-scn
+
+uv run -m database.oracle_write parquet/A_TEST_1048576.parquet
