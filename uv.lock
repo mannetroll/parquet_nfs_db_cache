@@ -263,13 +263,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "matplotlib" },
-    { name = "numpy", specifier = ">=2.4,<3" },
-    { name = "oracledb", specifier = ">=3,<4" },
-    { name = "polars", specifier = ">=1.38.1,<2" },
-    { name = "psutil", specifier = ">=7.2.2" },
-    { name = "pyarrow", specifier = ">=23.0.0" },
-    { name = "pyarrow", specifier = ">=23.0.1" },
+    { name = "matplotlib", specifier = ">=3.10.9,<4" },
+    { name = "numpy", specifier = ">=2.4.6,<3" },
+    { name = "oracledb", specifier = ">=3.4.2,<4" },
+    { name = "polars", specifier = ">=1.41.2,<2" },
+    { name = "psutil", specifier = ">=7.2.2,<8" },
+    { name = "pyarrow", specifier = ">=24.0.0,<25" },
 ]
 
 [[package]]
