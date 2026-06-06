@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -98,7 +99,22 @@ class DBCache:
         lock_path = cache_path.with_name(f"{cache_path.name}.lock")
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self._acquire_lock(lock_path)
+        source_version = version_fn()
+        reader_path = self._acquire_read_lock(lock_path)
+        try:
+            cached = self._read_if_cached(
+                cache_path,
+                meta_path,
+                display_key,
+                source_version,
+                source_sql,
+            )
+            if cached is not None:
+                return cached
+        finally:
+            self._release_read_lock(reader_path)
+
+        writer_path = self._acquire_write_lock(lock_path)
         try:
             source_version = version_fn()
             cached = self._read_if_cached(
@@ -131,18 +147,110 @@ class DBCache:
                 self._remove_file(meta_part_path)
                 raise
         finally:
-            try:
-                lock_path.rmdir()
-            except FileNotFoundError:
-                pass
+            self._release_write_lock(writer_path)
 
-    def _acquire_lock(self, lock_path: Path) -> None:
+    def _acquire_read_lock(self, lock_path: Path) -> Path:
+        readers_path = lock_path / "readers"
+        writer_path = lock_path / "writer"
+
         while True:
+            self._ensure_lock_dirs(lock_path)
+            if writer_path.exists():
+                time.sleep(self.poll_seconds)
+                continue
+
+            reader_path = readers_path / self._reader_lock_name()
             try:
-                lock_path.mkdir()
-                return
+                reader_path.mkdir()
+            except FileExistsError:
+                continue
+            except FileNotFoundError:
+                continue
+
+            if not writer_path.exists():
+                return reader_path
+
+            self._release_read_lock(reader_path)
+            time.sleep(self.poll_seconds)
+
+    def _acquire_write_lock(self, lock_path: Path) -> Path:
+        readers_path = lock_path / "readers"
+        writer_path = lock_path / "writer"
+
+        while True:
+            self._ensure_lock_dirs(lock_path)
+            try:
+                writer_path.mkdir()
+                break
             except FileExistsError:
                 time.sleep(self.poll_seconds)
+            except FileNotFoundError:
+                continue
+
+        try:
+            while self._has_readers(readers_path):
+                time.sleep(self.poll_seconds)
+            return writer_path
+        except Exception:
+            self._release_write_lock(writer_path)
+            raise
+
+    def _release_read_lock(self, reader_path: Path) -> None:
+        lock_path = reader_path.parent.parent
+        try:
+            reader_path.rmdir()
+        except (FileNotFoundError, OSError):
+            pass
+        self._cleanup_lock_dirs(lock_path)
+
+    def _release_write_lock(self, writer_path: Path) -> None:
+        lock_path = writer_path.parent
+        try:
+            writer_path.rmdir()
+        except (FileNotFoundError, OSError):
+            pass
+        self._cleanup_lock_dirs(lock_path)
+
+    @staticmethod
+    def _ensure_lock_dirs(lock_path: Path) -> None:
+        try:
+            lock_path.mkdir()
+        except FileExistsError:
+            pass
+
+        try:
+            (lock_path / "readers").mkdir()
+        except FileExistsError:
+            pass
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def _has_readers(readers_path: Path) -> bool:
+        try:
+            next(readers_path.iterdir())
+            return True
+        except StopIteration:
+            return False
+        except FileNotFoundError:
+            return False
+
+    @staticmethod
+    def _cleanup_lock_dirs(lock_path: Path) -> None:
+        try:
+            (lock_path / "readers").rmdir()
+        except (FileNotFoundError, OSError):
+            pass
+
+        try:
+            lock_path.rmdir()
+        except (FileNotFoundError, OSError):
+            pass
+
+    @staticmethod
+    def _reader_lock_name() -> str:
+        hostname = socket.gethostname().replace("/", "_")
+        return f"{hostname}.{os.getpid()}.{uuid.uuid4().hex}.reader"
 
     def _read_if_cached(
         self,

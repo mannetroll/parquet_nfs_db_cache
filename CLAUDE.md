@@ -23,8 +23,9 @@ uv run python -m nfs_cache.util.generate_parquets [--seed N]   # (re)generate te
 `swarm.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
 `--generations`, `--n-rows`, `--cols`, `--data-dir`, `--cache-dir`); see README for a small example.
 
-There is no test suite, linter, or formatter configured. `main.py`, `swarm.py`, and the
-`database.oracle_read` cold/warm logging are the de facto behavior checks.
+The project has focused `unittest` coverage under `tests/` for metadata integrity and locking.
+`main.py`, `swarm.py`, and the `database.oracle_read` cold/warm logging are still useful behavior
+checks. There is no linter or formatter configured.
 
 > **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
 > `Failed to initialize cache ... .git: Operation not permitted` because the sandbox blocks `.git`
@@ -83,12 +84,15 @@ Key mechanics to understand before changing:
   that path under `cache_dir`. Absolute paths and paths containing `..` are hashed into `_absolute/`
   or `_relative/` subdirs. Non-path args hash `(module, qualname, args, kwargs)` into a parquet
   filename.
-- **Locking** (`_acquire_lock`): a per-cache-key directory lock via `mkdir` (atomic on NFS),
-  busy-waited with `poll_seconds`. Released with `rmdir` in a `finally`.
-- **Invalidation** (`_source_version` + `_is_current`): a sidecar `*.meta.json` stores a
-  `source_version` string. Default version for a file source is `sha256:<hash>` of file content;
-  for DB sources pass a custom `source_version=` callable (intended use: an Oracle SCN). If the
-  callable returns `None`, versioning is disabled and the cache is always treated as current.
+- **Locking** (`_acquire_read_lock` + `_acquire_write_lock`): a per-cache-key directory read/write
+  lock via `mkdir` (atomic on NFS). Warm readers create per-reader tokens and can overlap. Writers
+  create a writer-intent directory, block new readers, and wait for active readers to drain before
+  writing or revalidating stale entries.
+- **Invalidation** (`_source_version` + `_read_valid_metadata`): a sidecar `*.meta.json` stores the
+  `source_version`, source key, parquet size/checksum, row count, column count, and schema hash.
+  Default version for a file source is `sha256:<hash>` of file content; SQL entries use
+  `MAX(ORA_ROWSCN)|ROWS`. If the source version is `None`, metadata still exists and the entry is
+  validated by parquet bytes/schema.
 - **Stable cold load** (`_load_stable`): reads source version before and after calling the source
   function; if it changed mid-load, it retries, so a cache entry is never written for a torn read.
 - **Atomic write** (`_write_data_container`): writes to a unique `*.part` file

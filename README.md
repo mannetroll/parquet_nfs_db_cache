@@ -13,8 +13,9 @@ file. Warm loads use `polars.read_parquet`.
 - Stores `DataContainer.data.rows_data_pl` as a Parquet cache file.
 - Reads cached objects with the fast Polars parquet reader.
 - Writes cached objects with `pyarrow.parquet.ParquetWriter`.
-- Uses a per-cache-key directory lock so multiple clients do not write the
-  same cache file at once.
+- Uses a per-cache-key directory read/write lock: warm readers can overlap,
+  while writers and invalidations block new readers and wait for active readers
+  to finish.
 - Writes through unique `*.part` files, then atomically replaces the final file
   with `os.replace`.
 - Cleans up partial cache files on write failure.

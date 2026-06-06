@@ -9,6 +9,7 @@ This is a Python 3.13 prototype for an NFS-backed Parquet cache around `DataCont
 - `uv sync`: install dependencies from `pyproject.toml` and `uv.lock`.
 - `uv run -m main`: run the cold-load, warm-hit, source-change demo.
 - `uv run -m swarm`: run the default concurrent cache exercise.
+- `uv run --no-cache --no-sync python -m unittest discover -s tests`: run the focused unit tests.
 - `uv run python -m nfs_cache.util.generate_parquets --seed 123`: generate reproducible parquet source data.
 - `./build_and_run.sh [--wipe]`: build and start the local Oracle container on port `1521`.
 - `uv run -m database.oracle_write_container`: populate Oracle with a generated `DataContainer`.
@@ -22,7 +23,7 @@ Use standard Python style with 4-space indentation, descriptive snake_case names
 
 ## Testing Guidelines
 
-There is no formal test suite yet. Treat `uv run -m main` as the smoke test for local parquet caching and `uv run -m swarm` as the behavioral check for locking, invalidation, and concurrent readers/writers. For Oracle changes, run the Docker bootstrap plus the relevant `database.oracle_*` CLI. Name future tests by behavior, for example `test_cache_invalidates_on_source_hash_change`.
+Focused `unittest` coverage lives in `tests/`, including metadata integrity and cache locking behavior. Treat `uv run -m main` as the smoke test for local parquet caching and `uv run -m swarm` as the process-level check for invalidation and concurrent clients. For Oracle changes, run the Docker bootstrap plus the relevant `database.oracle_*` CLI. Name future tests by behavior, for example `test_cache_invalidates_on_source_hash_change`.
 
 ## Commit & Pull Request Guidelines
 

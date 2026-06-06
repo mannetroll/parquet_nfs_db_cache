@@ -8,29 +8,49 @@ Cache DataContainer payloads whose data is a Polars DataFrame. Cold loads can
 come from slow sources such as Oracle or local parquet files. Warm loads read a
 Parquet cache file from an NFS-mounted shared directory with Polars.
 
-Current foundation
-------------------
+Current implementation
+----------------------
 
 - DBCache exposes two decorators:
   - @dbcache.data_container_cache for file or function sources.
   - @dbcache.sql_container_cache for Oracle SQL sources.
-- Data is persisted through pyarrow.parquet.ParquetWriter and read with
+- Data is persisted with pyarrow.parquet.ParquetWriter and read with
   polars.read_parquet.
 - Cache writes use unique *.part files and os.replace for final replacement.
-- Each cache key has a mkdir-based lock directory to serialize writers.
+- Per-key locking is a mkdir-based read/write lock:
+  - warm readers create per-reader lock tokens and can overlap
+  - writers and invalidations create writer intent, block new readers, and wait
+    for active readers to finish
+  - lock cleanup removes empty reader/writer directories after release
 - Metadata sidecars are authoritative commit markers. They store source_key,
   source_version, parquet byte size, parquet SHA-256, row count, column count,
-  schema hash, writer version, created_at, and the normalized SQL for SQL-backed
-  entries.
+  schema hash, writer version, created_at, and normalized source_sql for
+  SQL-backed entries.
 - Readers reject cache entries with missing, stale, unsupported, or corrupt
-  metadata, and they validate parquet size/checksum/row count/schema before
-  returning a warm hit.
+  metadata, and validate parquet size/checksum/row count/schema hash before a
+  warm hit.
 - File sources use SHA-256 content hashes by default.
 - SQL sources use normalized SQL for cache keys and an Oracle version token:
   COUNT(*) plus MAX(ORA_ROWSCN) for the detected FROM table.
 - Cold loads re-read the source version before and after loading and retry if
   the source changed during the read.
-- main.py is the local smoke test. swarm.py exercises multi-process cache use.
+
+Behavior checks
+---------------
+
+- main.py clears __cache__ at startup, then demonstrates cold load, warm hit,
+  source regeneration, stale invalidation, reload, and warm hit.
+- swarm.py exercises multi-process cache use and source regeneration.
+- tests/ contains focused unittest coverage for authoritative metadata,
+  corrupted cache recovery, normalized SQL metadata, overlapping warm readers,
+  and writer-preference locking.
+
+Useful commands:
+
+  uv run --no-cache --no-sync python -m unittest discover -s tests
+  uv run --no-cache --no-sync python -m compileall -q nfs_cache database tests main.py swarm.py
+  uv run --no-cache --no-sync python -m main
+  uv run --no-cache --no-sync python -m swarm
 
 What is left to be enterprise-ready
 -----------------------------------
@@ -41,18 +61,18 @@ failure coverage.
 
 1. Validate on the real NFS mount
 
-The design relies on mkdir for locks and os.replace for atomic replacement.
-Those are the right primitives, but behavior depends on NFS version, mount
-options, attribute caching, server implementation, and multi-host timing. Prove
-same-key and different-key behavior on the actual deployment NFS, not only on
-local disk.
+The design relies on mkdir for lock tokens and os.replace for atomic
+replacement. Those are the right primitives, but behavior depends on NFS
+version, mount options, attribute caching, server implementation, and multi-host
+timing. Prove same-key and different-key behavior on the actual deployment NFS,
+not only on local disk.
 
 2. Add stale lock detection and recovery
 
-Current lock directories can survive a crashed writer forever. Add lock
-metadata with hostname, PID, start time, UUID, and heartbeat or timestamp. Define
-when a lock may be broken, how competing clients break it safely, and how that
-event is logged.
+Current lock directories can survive a crashed reader or writer forever. Add
+lock metadata with hostname, PID, start time, UUID, and heartbeat or timestamp.
+Define when a lock may be broken, how competing clients break it safely, and how
+that event is logged.
 
 3. Strengthen the Oracle consistency model
 
@@ -62,45 +82,39 @@ SCN, for example with flashback query or an equivalent transaction strategy.
 Also decide whether tables require ROWDEPENDENCIES, how deletes/truncates/DDL
 are detected, and how joins or multi-table SQL should produce a version token.
 
-4. Improve read concurrency
-
-Reads and writes for the same key are currently serialized through one lock.
-That is safe but can limit throughput. Evaluate lock-free reads with stricter
-metadata ordering, or a read/write lock that allows many readers while blocking
-only writers and invalidations.
-
-5. Add observability
+4. Add observability
 
 Replace print-based status with structured logs and metrics:
 
 - cache hit, miss, reload, and invalidation counts
 - source version and cache key
-- lock wait time
+- reader/writer lock wait time
 - cold load duration
 - parquet write/read duration
 - stale lock recovery count
 - corruption and retry failures
 
-6. Build automated failure tests
+5. Broaden automated failure tests
 
-The swarm run and metadata unit tests are useful, but enterprise readiness needs
-broader repeatable tests for:
+The current unit tests and swarm run are useful, but enterprise readiness needs
+repeatable tests for:
 
-- crashed writer while holding a lock
+- crashed reader while holding a read token
+- crashed writer while holding writer intent
 - crashed writer after writing parquet but before metadata
 - more corrupted parquet and metadata variants
 - source changes during a cold DB read
-- concurrent same-key clients
-- concurrent different-key clients
+- concurrent same-key clients across processes
+- concurrent different-key clients across processes
 - NFS-mounted integration runs across multiple hosts or containers
 
-7. Add operational controls
+6. Add operational controls
 
 Add cache retention, quota management, cleanup of old *.part files, cache
-version migration, configurable compression, permissions checks, and clear runbook
-steps for clearing bad keys without deleting the whole cache.
+version migration, configurable compression, permissions checks, and clear
+runbook steps for clearing bad keys without deleting the whole cache.
 
-8. Harden configuration and security
+7. Harden configuration and security
 
 Move secrets out of defaults for production, define required environment
 variables, restrict cache directory permissions, and audit SQL/table parsing.
@@ -110,7 +124,8 @@ Recommended next steps
 ----------------------
 
 1. Implement lock metadata plus stale-lock recovery.
-2. Broaden automated coverage for crash, corruption, and source-change cases.
-3. Validate mkdir and os.replace semantics on the target NFS mount.
-4. Upgrade Oracle reads to a documented consistent-SCN strategy.
-5. Add structured logging and metrics before broader rollout.
+2. Validate mkdir, per-reader tokens, writer intent, and os.replace on the
+   target NFS mount.
+3. Upgrade Oracle reads to a documented consistent-SCN strategy.
+4. Add structured logging and metrics.
+5. Broaden crash/corruption/source-change tests.
