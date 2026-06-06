@@ -23,7 +23,7 @@ Use standard Python style with 4-space indentation, descriptive snake_case names
 
 ## Testing Guidelines
 
-Focused `unittest` coverage lives in `tests/`, including metadata integrity and cache locking behavior. Treat `uv run -m main` as the smoke test for local parquet caching and `uv run -m swarm` as the process-level check for invalidation and concurrent clients. For Oracle changes, run the Docker bootstrap plus the relevant `database.oracle_*` CLI. Name future tests by behavior, for example `test_cache_invalidates_on_source_hash_change`.
+Focused `unittest` coverage lives in `tests/`, including metadata integrity, cache locking behavior, and stale-lock recovery. Treat `uv run -m main` as the smoke test for local parquet caching and `uv run -m swarm` as the process-level check for invalidation and concurrent clients. For Oracle changes, run the Docker bootstrap plus the relevant `database.oracle_*` CLI. Name future tests by behavior, for example `test_cache_invalidates_on_source_hash_change`.
 
 ## Commit & Pull Request Guidelines
 

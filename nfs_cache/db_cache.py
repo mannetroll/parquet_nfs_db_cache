@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -22,6 +23,19 @@ P = ParamSpec("P")
 
 CACHE_METADATA_VERSION = 1
 CACHE_WRITER_VERSION = "parquet_nfs_db_cache.dbcache.v1"
+LOCK_METADATA_VERSION = 1
+
+
+class _LockLease:
+    def __init__(
+        self,
+        path: Path,
+        stop_event: threading.Event,
+        thread: threading.Thread,
+    ) -> None:
+        self.path = path
+        self.stop_event = stop_event
+        self.thread = thread
 
 
 class DBCache:
@@ -38,11 +52,21 @@ class DBCache:
         cache_dir: Path,
         *,
         poll_seconds: float = 0.1,
+        stale_lock_seconds: float = 300.0,
+        heartbeat_seconds: float | None = None,
         source_version: Callable[..., object] | None = None,
         connect_factory: Callable[[], object] | None = None,
     ) -> None:
         self.cache_dir = cache_dir
         self.poll_seconds = poll_seconds
+        if stale_lock_seconds <= 0:
+            raise ValueError("stale_lock_seconds must be positive")
+        self.stale_lock_seconds = stale_lock_seconds
+        if heartbeat_seconds is None:
+            heartbeat_seconds = max(poll_seconds, min(5.0, stale_lock_seconds / 3))
+        if heartbeat_seconds <= 0:
+            raise ValueError("heartbeat_seconds must be positive")
+        self.heartbeat_seconds = heartbeat_seconds
         self.source_version = source_version
         # Opaque callable returning a DB connection (anything with a
         # context-manager `cursor()`); used by `sql_container_cache` to read the
@@ -100,7 +124,7 @@ class DBCache:
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         source_version = version_fn()
-        reader_path = self._acquire_read_lock(lock_path)
+        reader_lease = self._acquire_read_lock(lock_path)
         try:
             cached = self._read_if_cached(
                 cache_path,
@@ -112,9 +136,9 @@ class DBCache:
             if cached is not None:
                 return cached
         finally:
-            self._release_read_lock(reader_path)
+            self._release_read_lock(reader_lease)
 
-        writer_path = self._acquire_write_lock(lock_path)
+        writer_lease = self._acquire_write_lock(lock_path)
         try:
             source_version = version_fn()
             cached = self._read_if_cached(
@@ -147,33 +171,35 @@ class DBCache:
                 self._remove_file(meta_part_path)
                 raise
         finally:
-            self._release_write_lock(writer_path)
+            self._release_write_lock(writer_lease)
 
-    def _acquire_read_lock(self, lock_path: Path) -> Path:
+    def _acquire_read_lock(self, lock_path: Path) -> _LockLease:
         readers_path = lock_path / "readers"
         writer_path = lock_path / "writer"
 
         while True:
             self._ensure_lock_dirs(lock_path)
             if writer_path.exists():
+                self._break_stale_lock(writer_path)
                 time.sleep(self.poll_seconds)
                 continue
 
             reader_path = readers_path / self._reader_lock_name()
             try:
                 reader_path.mkdir()
+                reader_lease = self._start_lock_heartbeat(reader_path, "reader")
             except FileExistsError:
                 continue
             except FileNotFoundError:
                 continue
 
             if not writer_path.exists():
-                return reader_path
+                return reader_lease
 
-            self._release_read_lock(reader_path)
+            self._release_read_lock(reader_lease)
             time.sleep(self.poll_seconds)
 
-    def _acquire_write_lock(self, lock_path: Path) -> Path:
+    def _acquire_write_lock(self, lock_path: Path) -> _LockLease:
         readers_path = lock_path / "readers"
         writer_path = lock_path / "writer"
 
@@ -181,8 +207,10 @@ class DBCache:
             self._ensure_lock_dirs(lock_path)
             try:
                 writer_path.mkdir()
+                writer_lease = self._start_lock_heartbeat(writer_path, "writer")
                 break
             except FileExistsError:
+                self._break_stale_lock(writer_path)
                 time.sleep(self.poll_seconds)
             except FileNotFoundError:
                 continue
@@ -190,26 +218,36 @@ class DBCache:
         try:
             while self._has_readers(readers_path):
                 time.sleep(self.poll_seconds)
-            return writer_path
+            return writer_lease
         except Exception:
-            self._release_write_lock(writer_path)
+            self._release_write_lock(writer_lease)
             raise
 
-    def _release_read_lock(self, reader_path: Path) -> None:
+    def _release_read_lock(self, lease: _LockLease | Path) -> None:
+        reader_path = self._lease_path(lease)
+        self._stop_lock_heartbeat(lease)
         lock_path = reader_path.parent.parent
-        try:
-            reader_path.rmdir()
-        except (FileNotFoundError, OSError):
-            pass
+        self._remove_lock_dir(reader_path)
         self._cleanup_lock_dirs(lock_path)
 
-    def _release_write_lock(self, writer_path: Path) -> None:
+    def _release_write_lock(self, lease: _LockLease | Path) -> None:
+        writer_path = self._lease_path(lease)
+        self._stop_lock_heartbeat(lease)
         lock_path = writer_path.parent
-        try:
-            writer_path.rmdir()
-        except (FileNotFoundError, OSError):
-            pass
+        self._remove_lock_dir(writer_path)
         self._cleanup_lock_dirs(lock_path)
+
+    @staticmethod
+    def _lease_path(lease: _LockLease | Path) -> Path:
+        return lease.path if isinstance(lease, _LockLease) else lease
+
+    @staticmethod
+    def _stop_lock_heartbeat(lease: _LockLease | Path) -> None:
+        if not isinstance(lease, _LockLease):
+            return
+
+        lease.stop_event.set()
+        lease.thread.join(timeout=2.0)
 
     @staticmethod
     def _ensure_lock_dirs(lock_path: Path) -> None:
@@ -225,15 +263,22 @@ class DBCache:
         except FileNotFoundError:
             pass
 
-    @staticmethod
-    def _has_readers(readers_path: Path) -> bool:
+    def _has_readers(self, readers_path: Path) -> bool:
+        has_reader = False
         try:
-            next(readers_path.iterdir())
-            return True
-        except StopIteration:
-            return False
+            reader_paths = list(readers_path.iterdir())
         except FileNotFoundError:
             return False
+
+        for reader_path in reader_paths:
+            if not reader_path.is_dir():
+                self._remove_file(reader_path)
+                continue
+            if self._break_stale_lock(reader_path):
+                continue
+            has_reader = True
+
+        return has_reader
 
     @staticmethod
     def _cleanup_lock_dirs(lock_path: Path) -> None:
@@ -251,6 +296,111 @@ class DBCache:
     def _reader_lock_name() -> str:
         hostname = socket.gethostname().replace("/", "_")
         return f"{hostname}.{os.getpid()}.{uuid.uuid4().hex}.reader"
+
+    def _start_lock_heartbeat(self, lock_path: Path, lock_type: str) -> _LockLease:
+        lock_uuid = uuid.uuid4().hex
+        created_at = self._utc_now()
+        self._write_lock_metadata(lock_path, lock_type, lock_uuid, created_at)
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=self._heartbeat_lock,
+            args=(lock_path, lock_type, lock_uuid, created_at, stop_event),
+            daemon=True,
+        )
+        thread.start()
+        return _LockLease(lock_path, stop_event, thread)
+
+    def _heartbeat_lock(
+        self,
+        lock_path: Path,
+        lock_type: str,
+        lock_uuid: str,
+        created_at: str,
+        stop_event: threading.Event,
+    ) -> None:
+        while not stop_event.wait(self.heartbeat_seconds):
+            if not lock_path.exists():
+                return
+            try:
+                self._write_lock_metadata(lock_path, lock_type, lock_uuid, created_at)
+            except OSError:
+                return
+
+    def _write_lock_metadata(
+        self,
+        lock_path: Path,
+        lock_type: str,
+        lock_uuid: str,
+        created_at: str,
+    ) -> None:
+        metadata_path = lock_path / "lock.json"
+        part_path = metadata_path.with_name(
+            f"{metadata_path.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
+        )
+        metadata = {
+            "metadata_version": LOCK_METADATA_VERSION,
+            "lock_type": lock_type,
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "uuid": lock_uuid,
+            "created_at": created_at,
+            "last_seen": self._utc_now(),
+        }
+        part_path.write_text(
+            json.dumps(metadata, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(part_path, metadata_path)
+
+    def _break_stale_lock(self, lock_path: Path) -> bool:
+        if not lock_path.exists() or not self._is_stale_lock(lock_path):
+            return False
+
+        print(f"Breaking stale cache lock: {lock_path}", flush=True)
+        self._remove_lock_dir(lock_path)
+        return not lock_path.exists()
+
+    def _is_stale_lock(self, lock_path: Path) -> bool:
+        try:
+            metadata_mtime = (lock_path / "lock.json").stat().st_mtime
+        except FileNotFoundError:
+            try:
+                metadata_mtime = lock_path.stat().st_mtime
+            except FileNotFoundError:
+                return False
+
+        return (time.time() - metadata_mtime) > self.stale_lock_seconds
+
+    @staticmethod
+    def _remove_lock_dir(lock_path: Path) -> None:
+        try:
+            children = list(lock_path.iterdir())
+        except FileNotFoundError:
+            return
+        except NotADirectoryError:
+            try:
+                lock_path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+            return
+
+        for child in children:
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    child.rmdir()
+                else:
+                    child.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+
+        try:
+            lock_path.rmdir()
+        except (FileNotFoundError, OSError):
+            pass
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(UTC).isoformat()
 
     def _read_if_cached(
         self,

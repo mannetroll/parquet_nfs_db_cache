@@ -87,7 +87,9 @@ Key mechanics to understand before changing:
 - **Locking** (`_acquire_read_lock` + `_acquire_write_lock`): a per-cache-key directory read/write
   lock via `mkdir` (atomic on NFS). Warm readers create per-reader tokens and can overlap. Writers
   create a writer-intent directory, block new readers, and wait for active readers to drain before
-  writing or revalidating stale entries.
+  writing or revalidating stale entries. Reader tokens and writer intent store `lock.json` metadata
+  (`hostname`, `pid`, `uuid`, `created_at`, `last_seen`) and update `last_seen` by heartbeat while
+  held. Locks older than `stale_lock_seconds` are broken.
 - **Invalidation** (`_source_version` + `_read_valid_metadata`): a sidecar `*.meta.json` stores the
   `source_version`, source key, parquet size/checksum, row count, column count, and schema hash.
   Default version for a file source is `sha256:<hash>` of file content; SQL entries use
@@ -117,7 +119,7 @@ it degrades to defaults when `.env` is missing **or unreadable** rather than cra
 
 ### Caveats / WIP
 
-- The README "Production Notes" list the known gaps (stale-lock recovery for crashed writers,
-  validating `mkdir`/`os.replace` on a real NFS mount, structured metrics, failure tests).
+- The README "Production Notes" list the known gaps (validating `mkdir`/stale-lock recovery/
+  `os.replace` on a real NFS mount, structured metrics, failure tests).
 - `MAX(ORA_ROWSCN)` is block-level granularity unless the table was created `ROWDEPENDENCIES`; it is
   monotonic enough as a version token, and the row count in the version string is the extra guard.

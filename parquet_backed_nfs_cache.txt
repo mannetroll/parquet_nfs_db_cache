@@ -21,6 +21,10 @@ Current implementation
   - warm readers create per-reader lock tokens and can overlap
   - writers and invalidations create writer intent, block new readers, and wait
     for active readers to finish
+  - reader tokens and writer intent include lock.json metadata with hostname,
+    PID, UUID, created_at, and last_seen
+  - held locks update last_seen with a heartbeat while the process is alive
+  - stale reader/writer locks are broken after stale_lock_seconds
   - lock cleanup removes empty reader/writer directories after release
 - Metadata sidecars are authoritative commit markers. They store source_key,
   source_version, parquet byte size, parquet SHA-256, row count, column count,
@@ -67,14 +71,7 @@ version, mount options, attribute caching, server implementation, and multi-host
 timing. Prove same-key and different-key behavior on the actual deployment NFS,
 not only on local disk.
 
-2. Add stale lock detection and recovery
-
-Current lock directories can survive a crashed reader or writer forever. Add
-lock metadata with hostname, PID, start time, UUID, and heartbeat or timestamp.
-Define when a lock may be broken, how competing clients break it safely, and how
-that event is logged.
-
-3. Strengthen the Oracle consistency model
+2. Strengthen the Oracle consistency model
 
 SQL invalidation now uses COUNT(*) and MAX(ORA_ROWSCN), but enterprise use needs
 a documented snapshot policy. Long reads should be tied to a consistent Oracle
@@ -82,7 +79,7 @@ SCN, for example with flashback query or an equivalent transaction strategy.
 Also decide whether tables require ROWDEPENDENCIES, how deletes/truncates/DDL
 are detected, and how joins or multi-table SQL should produce a version token.
 
-4. Add observability
+3. Add observability
 
 Replace print-based status with structured logs and metrics:
 
@@ -94,7 +91,7 @@ Replace print-based status with structured logs and metrics:
 - stale lock recovery count
 - corruption and retry failures
 
-5. Broaden automated failure tests
+4. Broaden automated failure tests
 
 The current unit tests and swarm run are useful, but enterprise readiness needs
 repeatable tests for:
@@ -108,13 +105,13 @@ repeatable tests for:
 - concurrent different-key clients across processes
 - NFS-mounted integration runs across multiple hosts or containers
 
-6. Add operational controls
+5. Add operational controls
 
 Add cache retention, quota management, cleanup of old *.part files, cache
 version migration, configurable compression, permissions checks, and clear
 runbook steps for clearing bad keys without deleting the whole cache.
 
-7. Harden configuration and security
+6. Harden configuration and security
 
 Move secrets out of defaults for production, define required environment
 variables, restrict cache directory permissions, and audit SQL/table parsing.
@@ -123,9 +120,9 @@ The current Oracle defaults are for local development only.
 Recommended next steps
 ----------------------
 
-1. Implement lock metadata plus stale-lock recovery.
-2. Validate mkdir, per-reader tokens, writer intent, and os.replace on the
-   target NFS mount.
-3. Upgrade Oracle reads to a documented consistent-SCN strategy.
-4. Add structured logging and metrics.
-5. Broaden crash/corruption/source-change tests.
+1. Validate mkdir, per-reader tokens, writer intent, stale-lock recovery, and
+   os.replace on the target NFS mount.
+2. Upgrade Oracle reads to a documented consistent-SCN strategy.
+3. Add structured logging and metrics.
+4. Broaden crash/corruption/source-change tests.
+5. Add operational controls for retention, quotas, cleanup, and bad-key runbooks.

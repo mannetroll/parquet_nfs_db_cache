@@ -20,6 +20,9 @@ file. Warm loads use `polars.read_parquet`.
 - Uses a per-cache-key mkdir-based read/write lock: warm readers create
   per-reader tokens and can overlap, while writers and invalidations block new
   readers and wait for active readers to finish.
+- Lock tokens include `lock.json` metadata with hostname, PID, UUID,
+  `created_at`, and `last_seen`; held locks heartbeat `last_seen`, and stale
+  reader/writer tokens are broken after `stale_lock_seconds`.
 - Adds an authoritative metadata sidecar:
 
 ```text
@@ -176,9 +179,8 @@ This is not yet production-grade enterprise software.
 
 For Oracle on NFS with many clients, the next important pieces are:
 
-- validate `mkdir` lock tokens, writer intent, and `os.replace` semantics on
-  the actual NFS mount
-- add stale lock detection and recovery for crashed readers/writers
+- validate `mkdir` lock tokens, writer intent, stale-lock recovery, and
+  `os.replace` semantics on the actual NFS mount
 - tie long Oracle reads to a documented consistent SCN/snapshot strategy
 - add structured logs and metrics for hit/miss/reload, reader/writer lock wait,
   cold load duration, parquet write/read duration, and corruption/retry counts
