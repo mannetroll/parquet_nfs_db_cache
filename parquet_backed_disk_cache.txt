@@ -56,10 +56,10 @@ Behavior checks
 Useful commands:
 
   uv run --no-cache --no-sync python -m unittest discover -s tests
-  uv run --no-cache --no-sync python -m compileall -q nfscache database tests main.py swarm_file.py swarm_sql.py
-  uv run --no-cache --no-sync python -m main
-  uv run --no-cache --no-sync python -m swarm_file
-  uv run --no-cache --no-sync python -m swarm_sql
+  uv run --no-cache --no-sync python -m compileall -q nfscache database tests
+  uv run --no-cache --no-sync python -m nfscache.util.main
+  uv run --no-cache --no-sync python -m nfscache.util.swarm_file
+  uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 
 What is left to be enterprise-ready
 -----------------------------------

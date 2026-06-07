@@ -7,11 +7,11 @@ This is a Python 3.13 prototype for an NFS-backed Parquet cache around `DataCont
 ## Build, Test, and Development Commands
 
 - `uv sync`: install dependencies from `pyproject.toml` and `uv.lock`.
-- `uv run --no-cache --no-sync python -m main`: clear `__cache__`, then run cold/warm/reload demo.
-- `uv run --no-cache --no-sync python -m swarm_file`: run the default process-level concurrency exercise.
-- `uv run --no-cache --no-sync python -m swarm_sql`: run Oracle SQL readers while writer processes rewrite the source table.
+- `uv run --no-cache --no-sync python -m nfscache.util.main`: clear `__cache__`, then run cold/warm/reload demo.
+- `uv run --no-cache --no-sync python -m nfscache.util.swarm_file`: run the default process-level concurrency exercise.
+- `uv run --no-cache --no-sync python -m nfscache.util.swarm_sql`: run Oracle SQL readers while writer processes rewrite the source table.
 - `uv run --no-cache --no-sync python -m unittest discover -s tests`: run the focused unit tests.
-- `uv run --no-cache --no-sync python -m compileall -q nfscache database tests main.py swarm_file.py swarm_sql.py`: syntax-check modules.
+- `uv run --no-cache --no-sync python -m compileall -q nfscache database tests`: syntax-check modules.
 - `uv run --no-cache --no-sync python -m nfscache.util.generate_parquets --seed 123`: generate reproducible parquet source data.
 - `./build_and_run.sh [--wipe]`: build and start the local Oracle container on port `1521`.
 - `uv run --no-cache --no-sync python -m database.oracle_write_container`: populate Oracle with generated data.

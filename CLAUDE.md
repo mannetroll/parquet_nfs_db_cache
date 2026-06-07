@@ -16,11 +16,11 @@ This project uses `uv` (Python 3.13). Dependencies live in `pyproject.toml` / `u
 
 ```bash
 uv sync
-uv run --no-cache --no-sync python -m main
-uv run --no-cache --no-sync python -m swarm_file
-uv run --no-cache --no-sync python -m swarm_sql
+uv run --no-cache --no-sync python -m nfscache.util.main
+uv run --no-cache --no-sync python -m nfscache.util.swarm_file
+uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 uv run --no-cache --no-sync python -m unittest discover -s tests
-uv run --no-cache --no-sync python -m compileall -q nfscache database tests main.py swarm_file.py swarm_sql.py
+uv run --no-cache --no-sync python -m compileall -q nfscache database tests
 uv run --no-cache --no-sync python -m nfscache.util.generate_parquets [--seed N]
 ```
 
@@ -56,7 +56,7 @@ The `.env` file wins when present.
 uv run --no-cache --no-sync python -m database.oracle_write_container
 uv run --no-cache --no-sync python -m database.oracle_write parquet/A_TEST_1048576.parquet
 uv run --no-cache --no-sync python -m database.oracle_read "select * from A_TEST_1048576"
-uv run --no-cache --no-sync python -m swarm_sql
+uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 ```
 
 `oracle_read` goes *through the cache*: a miss logs `Serving from Oracle (cache miss): ...`, a hit

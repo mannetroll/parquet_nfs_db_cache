@@ -48,7 +48,7 @@ __cache__/nfs/parquet/A_TEST_1048576.parquet.meta.json
 Run:
 
 ```bash
-uv run --no-cache --no-sync python -m main
+uv run --no-cache --no-sync python -m nfscache.util.main
 ```
 
 `main.py` runs:
@@ -83,7 +83,7 @@ the source data changes.
 Run the default swarm:
 
 ```bash
-uv run --no-cache --no-sync python -m swarm_file
+uv run --no-cache --no-sync python -m nfscache.util.swarm_file
 ```
 
 Default behavior:
@@ -97,7 +97,7 @@ Default behavior:
 Useful smaller run:
 
 ```bash
-uv run --no-cache --no-sync python -m swarm_file \
+uv run --no-cache --no-sync python -m nfscache.util.swarm_file \
   --clients 3 \
   --generators 1 \
   --gets-per-client 6 \
@@ -127,13 +127,13 @@ reload under load.
 Start Oracle first, then run:
 
 ```bash
-uv run --no-cache --no-sync python -m swarm_sql
+uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 ```
 
 Useful smaller run:
 
 ```bash
-uv run --no-cache --no-sync python -m swarm_sql \
+uv run --no-cache --no-sync python -m nfscache.util.swarm_sql \
   --clients 2 \
   --writers 1 \
   --gets-per-client 3 \
@@ -160,7 +160,7 @@ normalized SQL metadata, overlapping warm readers, and writer-preference
 locking. A syntax check for all modules:
 
 ```bash
-uv run --no-cache --no-sync python -m compileall -q nfscache database tests main.py swarm_file.py swarm_sql.py
+uv run --no-cache --no-sync python -m compileall -q nfscache database tests
 ```
 
 ## Generate Parquets

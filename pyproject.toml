@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-nfscache = "main:main"
+nfscache = "nfscache.util.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["database", "nfscache"]
