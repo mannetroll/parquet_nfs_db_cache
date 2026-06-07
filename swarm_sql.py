@@ -10,8 +10,8 @@ import polars as pl
 
 from database.oracle_env import apply_dotenv
 from database.oracle_pool import make_pool_factory
-from disk_cache.data.data_container import DataContainer
-from disk_cache.nfs_cache import NFSCache
+from nfscache.data.data_container import DataContainer
+from nfscache.nfs_cache import NFSCache
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
 

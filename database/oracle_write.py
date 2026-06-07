@@ -6,7 +6,7 @@ import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
-from disk_cache.data.data_container import DataContainer
+from nfscache.data.data_container import DataContainer
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
 

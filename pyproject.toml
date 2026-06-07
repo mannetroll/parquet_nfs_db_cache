@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "parquet_nfs_db_cache"
+name = "nfscache"
 version = "0.1.0"
-description = "parquet_nfs_db_cache"
+description = "Concurrency-safe, NFS-friendly Parquet cache for Polars DataFrames"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["database", "disk_cache"]
+packages = ["database", "nfscache"]
 
 [dependency-groups]
 dev = [

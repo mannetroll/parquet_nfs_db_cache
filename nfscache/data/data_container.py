@@ -2,7 +2,7 @@ from typing import Any
 
 import polars as pl
 
-from disk_cache.data.data_holder import DataHolder
+from nfscache.data.data_holder import DataHolder
 
 
 class DataContainer:

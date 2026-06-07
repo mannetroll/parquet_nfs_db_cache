@@ -20,8 +20,8 @@ uv run --no-cache --no-sync python -m main
 uv run --no-cache --no-sync python -m swarm_file
 uv run --no-cache --no-sync python -m swarm_sql
 uv run --no-cache --no-sync python -m unittest discover -s tests
-uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py swarm_sql.py
-uv run --no-cache --no-sync python -m disk_cache.util.generate_parquets [--seed N]
+uv run --no-cache --no-sync python -m compileall -q nfscache database tests main.py swarm_file.py swarm_sql.py
+uv run --no-cache --no-sync python -m nfscache.util.generate_parquets [--seed N]
 ```
 
 `main.py` demonstrates cold load, warm hit, source regeneration, reload, and warm hit.
@@ -67,7 +67,7 @@ run it again. `oracle_read` currently takes its cached connection settings from 
 
 ## Architecture
 
-### Core: `disk_cache/nfs_cache.py` — `NFSCache`
+### Core: `nfscache/nfs_cache.py` — `NFSCache`
 
 The whole caching engine is one class exposing **two decorators** that wrap any
 `Callable[..., DataContainer]`. The wrapped function is the cold-load source; the decorator handles
@@ -109,7 +109,7 @@ Key mechanics to understand before changing:
   (`pid + uuid` suffix), then `os.replace` onto the final path. Partials are cleaned up on failure.
   Only `DataContainer.data.rows_data_pl` (the Polars DataFrame) is persisted, via `pyarrow.parquet`.
 
-### Data model: `disk_cache/data/`
+### Data model: `nfscache/data/`
 
 - `DataContainer` (`data_container.py`): `__slots__`-based wrapper built from
   `{"headers": tuple, "data": pl.DataFrame}`. Holds a single `DataHolder` on `.data`.

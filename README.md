@@ -160,7 +160,7 @@ normalized SQL metadata, overlapping warm readers, and writer-preference
 locking. A syntax check for all modules:
 
 ```bash
-uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py swarm_sql.py
+uv run --no-cache --no-sync python -m compileall -q nfscache database tests main.py swarm_file.py swarm_sql.py
 ```
 
 ## Generate Parquets
@@ -168,7 +168,7 @@ uv run --no-cache --no-sync python -m compileall -q disk_cache database tests ma
 Generate or replace test parquet files:
 
 ```bash
-uv run --no-cache --no-sync python -m disk_cache.util.generate_parquets
+uv run --no-cache --no-sync python -m nfscache.util.generate_parquets
 ```
 
 The generator writes to a unique `*.part` file and atomically replaces the final
@@ -177,7 +177,7 @@ parquet when the write is complete.
 By default, content changes on every run. Use `--seed` for reproducible data:
 
 ```bash
-uv run --no-cache --no-sync python -m disk_cache.util.generate_parquets --seed 123
+uv run --no-cache --no-sync python -m nfscache.util.generate_parquets --seed 123
 ```
 
 ## Oracle SQL Cache

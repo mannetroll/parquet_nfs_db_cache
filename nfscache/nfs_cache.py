@@ -16,7 +16,7 @@ from pathlib import Path
 import polars as pl
 import pyarrow.parquet as pq
 
-from disk_cache.data.data_container import DataContainer
+from nfscache.data.data_container import DataContainer
 
 CACHE_METADATA_VERSION = 1
 CACHE_WRITER_VERSION = "nfscache.v1"
