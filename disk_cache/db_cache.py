@@ -18,7 +18,7 @@ from typing import ParamSpec
 import polars as pl
 import pyarrow.parquet as pq
 
-from nfs_cache.data.data_container import DataContainer
+from disk_cache.data.data_container import DataContainer
 
 P = ParamSpec("P")
 
@@ -70,7 +70,7 @@ class DBCache:
         self.heartbeat_seconds = heartbeat_seconds
         self.source_version = source_version
         # Opaque callable returning a DB connection (anything with a
-        # context-manager `cursor()`); used by `sql_container_cache` to read the
+        # context-manager `cursor()`); used by `sql` to read the
         # source version. Kept generic so the cache does not depend on oracledb.
         self.connect_factory = connect_factory
 
@@ -92,7 +92,7 @@ class DBCache:
 
         return wrapper
 
-    def sql_container_cache(
+    def sql(
         self,
         func: Callable[P, DataContainer],
     ) -> Callable[P, DataContainer]:
@@ -590,7 +590,7 @@ class DBCache:
         if args:
             return args[0]
 
-        raise TypeError("sql_container_cache requires a sql argument")
+        raise TypeError("sql requires a sql argument")
 
     def _table_from_sql(self, sql: str) -> str | None:
         match = self._FROM_RE.search(sql)

@@ -9,8 +9,7 @@ file. Warm loads use `polars.read_parquet`.
 
 ## Current Functionality
 
-- Decorator API: `@dbcache.data_container_cache` and
-  `@dbcache.sql_container_cache`.
+- Decorator API: `@dbcache.data_container_cache` and `@nfscache.sql`.
 - Stores `DataContainer.data.rows_data_pl` as a Parquet cache file.
 - Reads cached objects with the fast Polars parquet reader.
 - Writes cached objects with `pyarrow.parquet.ParquetWriter`.
@@ -129,7 +128,7 @@ normalized SQL metadata, overlapping warm readers, and writer-preference
 locking. A syntax check for all modules:
 
 ```bash
-uv run --no-cache --no-sync python -m compileall -q nfs_cache database tests main.py swarm.py
+uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm.py
 ```
 
 ## Generate Parquets
@@ -137,7 +136,7 @@ uv run --no-cache --no-sync python -m compileall -q nfs_cache database tests mai
 Generate or replace test parquet files:
 
 ```bash
-uv run --no-cache --no-sync python -m nfs_cache.util.generate_parquets
+uv run --no-cache --no-sync python -m disk_cache.util.generate_parquets
 ```
 
 The generator writes to a unique `*.part` file and atomically replaces the final
@@ -146,7 +145,7 @@ parquet when the write is complete.
 By default, content changes on every run. Use `--seed` for reproducible data:
 
 ```bash
-uv run --no-cache --no-sync python -m nfs_cache.util.generate_parquets --seed 123
+uv run --no-cache --no-sync python -m disk_cache.util.generate_parquets --seed 123
 ```
 
 ## Oracle SQL Cache

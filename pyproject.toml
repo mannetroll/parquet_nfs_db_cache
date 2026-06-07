@@ -19,4 +19,4 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["database", "nfs_cache"]
+packages = ["database", "disk_cache"]

@@ -5,8 +5,8 @@ import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
-from main import dbcache
-from nfs_cache.data.data_container import DataContainer
+from main import dbcache as nfscache
+from disk_cache.data.data_container import DataContainer
 
 DEFAULT_BATCH_SIZE = 10000
 
@@ -56,10 +56,10 @@ def _fetch_data_container(
 
 
 # Let the cache read the source version (MAX(ORA_ROWSCN)) on its own connection.
-dbcache.connect_factory = lambda: connect(oracle_args())
+nfscache.connect_factory = lambda: connect(oracle_args())
 
 
-@dbcache.sql_container_cache
+@nfscache.sql
 def read_data_container(sql: str) -> DataContainer:
     # This body only runs on a cache miss, so reaching it means a live read.
     print(f"Serving from Oracle (cache miss): {sql}", flush=True)

@@ -13,7 +13,7 @@ Current implementation
 
 - DBCache exposes two decorators:
   - @dbcache.data_container_cache for file or function sources.
-  - @dbcache.sql_container_cache for Oracle SQL sources.
+  - @nfscache.sql for Oracle SQL sources.
 - Data is persisted with pyarrow.parquet.ParquetWriter and read with
   polars.read_parquet.
 - Cache writes use unique *.part files and os.replace for final replacement.
@@ -52,7 +52,7 @@ Behavior checks
 Useful commands:
 
   uv run --no-cache --no-sync python -m unittest discover -s tests
-  uv run --no-cache --no-sync python -m compileall -q nfs_cache database tests main.py swarm.py
+  uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm.py
   uv run --no-cache --no-sync python -m main
   uv run --no-cache --no-sync python -m swarm
 

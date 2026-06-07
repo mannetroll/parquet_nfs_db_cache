@@ -9,9 +9,9 @@ from pathlib import Path
 
 import polars as pl
 
-from nfs_cache.data.data_container import DataContainer
-from nfs_cache.db_cache import DBCache
-from nfs_cache.util.generate_parquets import ensure_one_parquet
+from disk_cache.data.data_container import DataContainer
+from disk_cache.db_cache import DBCache
+from disk_cache.util.generate_parquets import ensure_one_parquet
 
 
 def load_data_container(path: Path, cache_dir: Path) -> DataContainer:

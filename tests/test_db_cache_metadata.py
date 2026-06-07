@@ -7,8 +7,8 @@ from pathlib import Path
 
 import polars as pl
 
-from nfs_cache.data.data_container import DataContainer
-from nfs_cache.db_cache import DBCache
+from disk_cache.data.data_container import DataContainer
+from disk_cache.db_cache import DBCache
 
 
 class DBCacheMetadataTests(unittest.TestCase):
@@ -113,7 +113,7 @@ class DBCacheMetadataTests(unittest.TestCase):
             raw_sql = " select  *\nfrom DATA_CONTAINER_DEMO where id = 1; "
             normalized_sql = "select * from DATA_CONTAINER_DEMO where id = 1"
 
-            @cache.sql_container_cache
+            @cache.sql
             def load(sql: str) -> DataContainer:
                 df = pl.DataFrame({"id": [1]})
                 return DataContainer({"headers": tuple(df.columns), "data": df})

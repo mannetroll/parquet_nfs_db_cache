@@ -17,7 +17,7 @@ This project uses `uv` (Python 3.13). Dependencies live in `pyproject.toml` / `u
 ```bash
 uv run -m main          # demo: cold load -> warm hit -> source change -> reload -> warm hit
 uv run -m swarm         # multi-process concurrency test (4 clients, 12 get waves, 6 regenerations)
-uv run python -m nfs_cache.util.generate_parquets [--seed N]   # (re)generate test parquet files
+uv run python -m disk_cache.util.generate_parquets [--seed N]   # (re)generate test parquet files
 ```
 
 `swarm.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
@@ -59,7 +59,7 @@ direct path; the cached read takes connection settings from `oracle_args()` (def
 
 ## Architecture
 
-### Core: `nfs_cache/db_cache.py` — `DBCache`
+### Core: `disk_cache/db_cache.py` — `DBCache`
 
 The whole caching engine is one class exposing **two decorators** that wrap any
 `Callable[..., DataContainer]`. The wrapped function is the cold-load source; the decorator handles
@@ -68,7 +68,7 @@ version_fn, load_fn)` flow — they differ only in how the cache key and source 
 
 - `@dbcache.data_container_cache` — for file/in-process sources. Key and version come from the call
   args (see below).
-- `@dbcache.sql_container_cache` — for SQL sources. First arg is the SQL string (optional
+- `@nfscache.sql` — for SQL sources. First arg is the SQL string (optional
   `return_cols=` kwarg). Key is `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read
   from Oracle as `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
   `DBCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
@@ -101,7 +101,7 @@ Key mechanics to understand before changing:
   (`pid + uuid` suffix), then `os.replace` onto the final path. Partials are cleaned up on failure.
   Only `DataContainer.data.rows_data_pl` (the Polars DataFrame) is persisted, via `pyarrow.parquet`.
 
-### Data model: `nfs_cache/data/`
+### Data model: `disk_cache/data/`
 
 - `DataContainer` (`data_container.py`): `__slots__`-based wrapper built from
   `{"headers": tuple, "data": pl.DataFrame}`. Holds a single `DataHolder` on `.data`.
@@ -114,7 +114,7 @@ Each `oracle_*.py` is a self-contained CLI. `oracle_write*.py` map Polars dtypes
 (`oracle_type`), validate identifiers (`oracle_identifier`), create/drop the table, and `executemany`
 in batches; they print `current_scn` before/after to demonstrate the SCN-based version token.
 `oracle_read.py` wires the SQL cache to Oracle (sets `connect_factory`, decorates with
-`sql_container_cache`). `oracle_env.py` is a tiny dependency-free `.env` reader (no python-dotenv);
+`nfscache.sql`). `oracle_env.py` is a tiny dependency-free `.env` reader (no python-dotenv);
 it degrades to defaults when `.env` is missing **or unreadable** rather than crashing.
 
 ### Caveats / WIP
