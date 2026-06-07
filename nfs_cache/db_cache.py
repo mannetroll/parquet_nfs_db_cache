@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -95,11 +96,15 @@ class DBCache:
         self,
         func: Callable[P, DataContainer],
     ) -> Callable[P, DataContainer]:
+        signature = inspect.signature(func)
+
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
-            sql = args[0] if args else kwargs["sql"]
+            args_tuple = tuple(args)
+            kwargs_dict = dict(kwargs)
+            sql = self._sql_arg(signature, args_tuple, kwargs_dict)
             normalized_sql = self._normalize_sql(str(sql))
-            return_cols = kwargs.get("return_cols")
+            return_cols = kwargs_dict.get("return_cols")
             display_key = self._sql_display_key(normalized_sql, return_cols)
             return self._run_cached(
                 display_key,
@@ -562,6 +567,30 @@ class DBCache:
     @staticmethod
     def _normalize_sql(sql: str) -> str:
         return " ".join(sql.split()).strip().rstrip(";")
+
+    @staticmethod
+    def _sql_arg(
+        signature: inspect.Signature,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> object:
+        if "sql" in kwargs:
+            return kwargs["sql"]
+
+        try:
+            bound = signature.bind_partial(*args, **kwargs)
+        except TypeError:
+            if args:
+                return args[0]
+            raise
+
+        if "sql" in bound.arguments:
+            return bound.arguments["sql"]
+
+        if args:
+            return args[0]
+
+        raise TypeError("sql_container_cache requires a sql argument")
 
     def _table_from_sql(self, sql: str) -> str | None:
         match = self._FROM_RE.search(sql)
