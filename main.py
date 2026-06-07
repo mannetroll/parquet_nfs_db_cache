@@ -14,10 +14,10 @@ N_ROWS = 1_048_576
 DATA_PATH = DATA_DIR / f"A_TEST_{N_ROWS}.parquet"
 
 
-@dbcache.data_container_cache
-def load_data_container(path: Path) -> DataContainer:
-    print(f"Reading: {path}...")
-    df = pl.read_parquet(path)
+@dbcache.parquet
+def load_data_container(filename: Path) -> DataContainer:
+    print(f"Reading: {filename}...")
+    df = pl.read_parquet(filename)
     data = DataContainer({"headers": tuple(df.columns), "data": df}) # can also be from Oracle, MySQL, etc.
     return data
 

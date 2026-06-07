@@ -65,8 +65,8 @@ class DBCacheLockingTests(unittest.TestCase):
             cache = ObservedReadCache(tmp_path / "cache")
             cold_loads = 0
 
-            @cache.data_container_cache
-            def load(path: Path) -> DataContainer:
+            @cache.parquet
+            def load(filename: Path) -> DataContainer:
                 nonlocal cold_loads
                 cold_loads += 1
                 df = pl.DataFrame({"value": [1, 2, 3]})

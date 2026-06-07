@@ -16,15 +16,15 @@ This project uses `uv` (Python 3.13). Dependencies live in `pyproject.toml` / `u
 
 ```bash
 uv run -m main          # demo: cold load -> warm hit -> source change -> reload -> warm hit
-uv run -m swarm         # multi-process concurrency test (4 clients, 12 get waves, 6 regenerations)
+uv run -m swarm_file    # multi-process concurrency test (4 clients, 12 get waves, 6 regenerations)
 uv run python -m disk_cache.util.generate_parquets [--seed N]   # (re)generate test parquet files
 ```
 
-`swarm.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
+`swarm_file.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
 `--generations`, `--n-rows`, `--cols`, `--data-dir`, `--cache-dir`); see README for a small example.
 
 The project has focused `unittest` coverage under `tests/` for metadata integrity and locking.
-`main.py`, `swarm.py`, and the `database.oracle_read` cold/warm logging are still useful behavior
+`main.py`, `swarm_file.py`, and the `database.oracle_read` cold/warm logging are still useful behavior
 checks. There is no linter or formatter configured.
 
 > **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
@@ -66,24 +66,23 @@ The whole caching engine is one class exposing **two decorators** that wrap any
 locking, invalidation, read, and write. Both funnel into the shared `_run_cached(display_key,
 version_fn, load_fn)` flow — they differ only in how the cache key and source version are derived:
 
-- `@dbcache.data_container_cache` — for file/in-process sources. Key and version come from the call
-  args (see below).
+- `@dbcache.parquet` — for file/in-process sources. Key and version come from
+  the decorated call's `filename` argument.
 - `@nfscache.sql` — for SQL sources. First arg is the SQL string (optional
   `return_cols=` kwarg). Key is `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read
   from Oracle as `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
   `DBCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
 
 `connect_factory` is an opaque `Callable[[], connection]` set on the `DBCache` instance (see
-`database/oracle_read.py`, which assigns `dbcache.connect_factory = lambda: connect(oracle_args())`).
+`database/oracle_read.py`, which assigns `nfscache.connect_factory = lambda: connect(oracle_args())`).
 It is kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
 
 Key mechanics to understand before changing:
 
-- **Cache key / path** (`_display_key` + `_cache_path`): for `data_container_cache`, if the first
-  positional arg (or `path` kwarg) is a path-like, the file path *is* the key and the cache mirrors
-  that path under `cache_dir`. Absolute paths and paths containing `..` are hashed into `_absolute/`
-  or `_relative/` subdirs. Non-path args hash `(module, qualname, args, kwargs)` into a parquet
-  filename.
+- **Cache key / path** (`_parquet_display_key` + `_cache_path`): for `parquet`,
+  the `filename` argument is the key and the cache mirrors that path under
+  `cache_dir`. Absolute paths and paths containing `..` are hashed into
+  `_absolute/` or `_relative/` subdirs.
 - **Locking** (`_acquire_read_lock` + `_acquire_write_lock`): a per-cache-key directory read/write
   lock via `mkdir` (atomic on NFS). Warm readers create per-reader tokens and can overlap. Writers
   create a writer-intent directory, block new readers, and wait for active readers to drain before

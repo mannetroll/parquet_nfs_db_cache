@@ -74,18 +74,21 @@ class DBCache:
         # source version. Kept generic so the cache does not depend on oracledb.
         self.connect_factory = connect_factory
 
-    def data_container_cache(
+    def parquet(
         self,
         func: Callable[P, DataContainer],
     ) -> Callable[P, DataContainer]:
+        signature = inspect.signature(func)
+
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
             args_tuple = tuple(args)
             kwargs_dict = dict(kwargs)
-            display_key = self._display_key(func, args_tuple, kwargs_dict)
+            filename = self._filename_arg(signature, args_tuple, kwargs_dict)
+            display_key = self._parquet_display_key(filename)
             return self._run_cached(
                 display_key,
-                lambda: self._source_version(args_tuple, kwargs_dict),
+                lambda: self._source_version(filename, args_tuple, kwargs_dict),
                 lambda: func(*args, **kwargs),
                 source_sql=None,
             )
@@ -541,6 +544,7 @@ class DBCache:
 
     def _source_version(
         self,
+        filename: object,
         args: tuple[object, ...],
         kwargs: Mapping[str, object],
     ) -> str | None:
@@ -548,9 +552,8 @@ class DBCache:
             version = self.source_version(*args, **kwargs)
             return None if version is None else str(version)
 
-        path_arg = self._path_arg(args, kwargs)
-        if isinstance(path_arg, (str, os.PathLike)):
-            path = Path(path_arg)
+        if isinstance(filename, (str, os.PathLike)):
+            path = Path(filename)
             if path.is_file():
                 return f"sha256:{self._file_hash(path)}"
 
@@ -765,21 +768,9 @@ class DBCache:
 
         return f" version={source_version[:40]}"
 
-    def _display_key(
-        self,
-        func: Callable[..., object],
-        args: tuple[object, ...],
-        kwargs: Mapping[str, object],
-    ) -> str:
-        path_arg = self._path_arg(args, kwargs)
-        if isinstance(path_arg, (str, os.PathLike)):
-            return os.fspath(path_arg)
-
-        cache_key = repr(
-            (func.__module__, func.__qualname__, args, sorted(kwargs.items()))
-        )
-        digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
-        return f"{func.__module__}.{func.__qualname__}/{digest}.parquet"
+    @staticmethod
+    def _parquet_display_key(filename: object) -> str:
+        return os.fspath(filename)
 
     def _cache_path(self, display_key: str) -> Path:
         key_path = Path(display_key)
@@ -820,11 +811,13 @@ class DBCache:
         return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
-    def _path_arg(
+    def _filename_arg(
+        signature: inspect.Signature,
         args: tuple[object, ...],
         kwargs: Mapping[str, object],
-    ) -> object | None:
-        return args[0] if args else kwargs.get("path")
+    ) -> object:
+        bound = signature.bind_partial(*args, **kwargs)
+        return bound.arguments["filename"]
 
     @staticmethod
     def _is_complete(path: Path) -> bool:

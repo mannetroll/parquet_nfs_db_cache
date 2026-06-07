@@ -20,8 +20,8 @@ class DBCacheMetadataTests(unittest.TestCase):
             cache = DBCache(tmp_path / "cache")
             calls = 0
 
-            @cache.data_container_cache
-            def load(path: Path) -> DataContainer:
+            @cache.parquet
+            def load(filename: Path) -> DataContainer:
                 nonlocal calls
                 calls += 1
                 df = pl.DataFrame({"id": [1, 2], "name": ["a", "b"]})
@@ -59,8 +59,8 @@ class DBCacheMetadataTests(unittest.TestCase):
             cache = DBCache(tmp_path / "cache")
             calls = 0
 
-            @cache.data_container_cache
-            def load(path: Path) -> DataContainer:
+            @cache.parquet
+            def load(filename: Path) -> DataContainer:
                 nonlocal calls
                 calls += 1
                 df = pl.DataFrame({"value": [calls]})
@@ -86,8 +86,8 @@ class DBCacheMetadataTests(unittest.TestCase):
             cache = DBCache(tmp_path / "cache")
             calls = 0
 
-            @cache.data_container_cache
-            def load(path: Path) -> DataContainer:
+            @cache.parquet
+            def load(filename: Path) -> DataContainer:
                 nonlocal calls
                 calls += 1
                 df = pl.DataFrame({"value": [calls]})
@@ -105,6 +105,32 @@ class DBCacheMetadataTests(unittest.TestCase):
 
             self.assertEqual(calls, 2)
             self.assertEqual(df["value"].to_list(), [2])
+
+    def test_parquet_cache_uses_filename_arg_on_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "source.txt"
+            source_path.write_text("v1", encoding="utf-8")
+            cache = DBCache(tmp_path / "cache")
+            calls = 0
+
+            class Loader:
+                @cache.parquet
+                def load(self, filename: Path) -> DataContainer:
+                    nonlocal calls
+                    calls += 1
+                    df = pl.DataFrame({"value": [calls]})
+                    return DataContainer({"headers": tuple(df.columns), "data": df})
+
+            loader = Loader()
+            loader.load(source_path)
+            data = loader.load(source_path)
+            df = data.data.rows_data_pl
+
+            self.assertEqual(calls, 1)
+            self.assertEqual(df["value"].to_list(), [1])
+            metadata = self._read_only_metadata(tmp_path / "cache")
+            self.assertEqual(metadata["source_key"], str(source_path))
 
     def test_sql_cache_metadata_contains_normalized_sql(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

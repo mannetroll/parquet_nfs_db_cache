@@ -9,7 +9,7 @@ file. Warm loads use `polars.read_parquet`.
 
 ## Current Functionality
 
-- Decorator API: `@dbcache.data_container_cache` and `@nfscache.sql`.
+- Decorator API: `@dbcache.parquet` and `@nfscache.sql`.
 - Stores `DataContainer.data.rows_data_pl` as a Parquet cache file.
 - Reads cached objects with the fast Polars parquet reader.
 - Writes cached objects with `pyarrow.parquet.ParquetWriter`.
@@ -74,14 +74,14 @@ Returning cached object: parquet/A_TEST_1048576.parquet sha=<first 40 chars>...
 
 ## Swarm Test
 
-`swarm.py` tests a multi-client environment with process-level concurrency.
+`swarm_file.py` tests a multi-client environment with process-level concurrency.
 It mixes cache gets with source regeneration to simulate clients reading while
 the source data changes.
 
 Run the default swarm:
 
 ```bash
-uv run --no-cache --no-sync python -m swarm
+uv run --no-cache --no-sync python -m swarm_file
 ```
 
 Default behavior:
@@ -95,7 +95,7 @@ Default behavior:
 Useful smaller run:
 
 ```bash
-uv run --no-cache --no-sync python -m swarm \
+uv run --no-cache --no-sync python -m swarm_file \
   --clients 3 \
   --generators 1 \
   --gets-per-client 6 \

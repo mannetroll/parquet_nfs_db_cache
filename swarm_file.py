@@ -17,10 +17,10 @@ from disk_cache.util.generate_parquets import ensure_one_parquet
 def load_data_container(path: Path, cache_dir: Path) -> DataContainer:
     dbcache = DBCache(cache_dir)
 
-    @dbcache.data_container_cache
-    def load(path: Path) -> DataContainer:
-        print(f"[pid {os.getpid()}] Reading: {path}...", flush=True)
-        df = pl.read_parquet(path)
+    @dbcache.parquet
+    def load(filename: Path) -> DataContainer:
+        print(f"[pid {os.getpid()}] Reading: {filename}...", flush=True)
+        df = pl.read_parquet(filename)
         return DataContainer({"headers": tuple(df.columns), "data": df})
 
     return load(path)
