@@ -184,6 +184,23 @@ class NFSCacheLockingTests(unittest.TestCase):
             finally:
                 cache._release_read_lock(reader_lease)
 
+    def test_release_keeps_shared_lock_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
+            lock_path = Path(tmp) / "entry.parquet.lock"
+
+            reader_lease = cache._acquire_read_lock(lock_path)
+            cache._release_read_lock(reader_lease)
+            self.assertTrue(lock_path.is_dir())
+            self.assertTrue((lock_path / "readers").is_dir())
+            self.assertFalse(reader_lease.path.exists())
+
+            writer_lease = cache._acquire_write_lock(lock_path)
+            cache._release_write_lock(writer_lease)
+            self.assertTrue(lock_path.is_dir())
+            self.assertTrue((lock_path / "readers").is_dir())
+            self.assertFalse(writer_lease.path.exists())
+
     def _wait_until(self, predicate: Callable[[], bool], timeout: float = 1.0) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

@@ -25,7 +25,9 @@ Current implementation
     PID, UUID, created_at, and last_seen
   - held locks update last_seen with a heartbeat while the process is alive
   - stale reader/writer locks are broken after stale_lock_seconds
-  - lock cleanup removes empty reader/writer directories after release
+  - the default stale timeout is 30 minutes to allow 10-minute cold Oracle reads
+  - lock cleanup removes per-client reader/writer tokens but leaves shared
+    coordination directories in place to avoid races under process load
 - Metadata sidecars are authoritative commit markers. They store source_key,
   source_version, parquet byte size, parquet SHA-256, row count, column count,
   schema hash, writer version, created_at, and normalized source_sql for

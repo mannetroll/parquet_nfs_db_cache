@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import functools
 import hashlib
 import inspect
@@ -53,7 +54,7 @@ class NFSCache:
         cache_dir: Path,
         *,
         poll_seconds: float = 0.1,
-        stale_lock_seconds: float = 300.0,
+        stale_lock_seconds: float = 1800.0,
         heartbeat_seconds: float | None = None,
         source_version: Callable[..., object] | None = None,
         connect_factory: Callable[[], object] | None = None,
@@ -199,7 +200,13 @@ class NFSCache:
             except FileExistsError:
                 continue
             except FileNotFoundError:
+                time.sleep(self.poll_seconds)
                 continue
+            except OSError as exc:
+                if self._is_transient_lock_mkdir_error(exc):
+                    time.sleep(self.poll_seconds)
+                    continue
+                raise
 
             if not writer_path.exists():
                 return reader_lease
@@ -221,7 +228,13 @@ class NFSCache:
                 self._break_stale_lock(writer_path)
                 time.sleep(self.poll_seconds)
             except FileNotFoundError:
+                time.sleep(self.poll_seconds)
                 continue
+            except OSError as exc:
+                if self._is_transient_lock_mkdir_error(exc):
+                    time.sleep(self.poll_seconds)
+                    continue
+                raise
 
         try:
             while self._has_readers(readers_path):
@@ -260,16 +273,12 @@ class NFSCache:
     @staticmethod
     def _ensure_lock_dirs(lock_path: Path) -> None:
         try:
-            lock_path.mkdir()
+            (lock_path / "readers").mkdir(parents=True, exist_ok=True)
         except FileExistsError:
             pass
-
-        try:
-            (lock_path / "readers").mkdir()
-        except FileExistsError:
-            pass
-        except FileNotFoundError:
-            pass
+        except OSError as exc:
+            if not NFSCache._is_transient_lock_mkdir_error(exc):
+                raise
 
     def _has_readers(self, readers_path: Path) -> bool:
         has_reader = False
@@ -290,15 +299,13 @@ class NFSCache:
 
     @staticmethod
     def _cleanup_lock_dirs(lock_path: Path) -> None:
-        try:
-            (lock_path / "readers").rmdir()
-        except (FileNotFoundError, OSError):
-            pass
+        # Keep shared coordination directories in place. Removing them after a
+        # release races with other clients creating reader tokens on NFS.
+        _ = lock_path
 
-        try:
-            lock_path.rmdir()
-        except (FileNotFoundError, OSError):
-            pass
+    @staticmethod
+    def _is_transient_lock_mkdir_error(exc: OSError) -> bool:
+        return exc.errno in {errno.ENOENT, errno.EINVAL}
 
     @staticmethod
     def _reader_lock_name() -> str:

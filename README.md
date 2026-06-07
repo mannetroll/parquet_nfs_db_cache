@@ -22,6 +22,8 @@ file. Warm loads use `polars.read_parquet`.
 - Lock tokens include `lock.json` metadata with hostname, PID, UUID,
   `created_at`, and `last_seen`; held locks heartbeat `last_seen`, and stale
   reader/writer tokens are broken after `stale_lock_seconds`.
+- The default stale lock timeout is 30 minutes, sized for cold Oracle reads that
+  can take around 10 minutes while still heartbeating as live work.
 - Adds an authoritative metadata sidecar:
 
 ```text

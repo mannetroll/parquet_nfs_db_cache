@@ -96,7 +96,8 @@ Key mechanics to understand before changing:
   create a writer-intent directory, block new readers, and wait for active readers to drain before
   writing or revalidating stale entries. Reader tokens and writer intent store `lock.json` metadata
   (`hostname`, `pid`, `uuid`, `created_at`, `last_seen`) and update `last_seen` by heartbeat while
-  held. Locks older than `stale_lock_seconds` are broken.
+  held. Locks older than `stale_lock_seconds` are broken. The default stale timeout is 30 minutes so
+  a live 10-minute Oracle cold read is not treated as abandoned.
 - **Invalidation** (`_source_version` + `_read_valid_metadata`): a sidecar `*.meta.json` stores the
   `source_version`, source key, parquet size/checksum, row count, column count, and schema hash.
   Default version for a file source is `sha256:<hash>` of file content; SQL entries use
