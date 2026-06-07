@@ -24,4 +24,6 @@ __cache__/
 *.parquet
 *.env
 *.log
+*.txt
 .claude/
+
