@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import errno
 import functools
 import hashlib
@@ -14,14 +12,11 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ParamSpec
 
 import polars as pl
 import pyarrow.parquet as pq
 
 from disk_cache.data.data_container import DataContainer
-
-P = ParamSpec("P")
 
 CACHE_METADATA_VERSION = 1
 CACHE_WRITER_VERSION = "nfscache.v1"
@@ -75,7 +70,7 @@ class NFSCache:
         # source version. Kept generic so the cache does not depend on oracledb.
         self.connect_factory = connect_factory
 
-    def parquet(
+    def parquet[**P](
         self,
         func: Callable[P, DataContainer],
     ) -> Callable[P, DataContainer]:
@@ -96,7 +91,7 @@ class NFSCache:
 
         return wrapper
 
-    def sql(
+    def sql[**P](
         self,
         func: Callable[P, DataContainer],
     ) -> Callable[P, DataContainer]:

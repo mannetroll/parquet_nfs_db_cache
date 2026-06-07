@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from argparse import Namespace
 from collections.abc import Callable, Mapping
 from pathlib import Path
