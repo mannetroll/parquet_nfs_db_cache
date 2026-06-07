@@ -15,12 +15,16 @@ making concurrent writes and cache invalidation safe over a shared filesystem.
 This project uses `uv` (Python 3.13). Dependencies live in `pyproject.toml` / `uv.lock`.
 
 ```bash
-uv run -m main          # demo: cold load -> warm hit -> source change -> reload -> warm hit
-uv run -m swarm_file    # multi-process concurrency test (4 clients, 12 get waves, 6 regenerations)
-uv run -m swarm_sql     # Oracle SQL concurrency test with clients reading while writers rewrite the table
-uv run python -m disk_cache.util.generate_parquets [--seed N]   # (re)generate test parquet files
+uv sync
+uv run --no-cache --no-sync python -m main
+uv run --no-cache --no-sync python -m swarm_file
+uv run --no-cache --no-sync python -m swarm_sql
+uv run --no-cache --no-sync python -m unittest discover -s tests
+uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py swarm_sql.py
+uv run --no-cache --no-sync python -m disk_cache.util.generate_parquets [--seed N]
 ```
 
+`main.py` demonstrates cold load, warm hit, source regeneration, reload, and warm hit.
 `swarm_file.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
 `--generations`, `--n-rows`, `--cols`, `--data-dir`, `--cache-dir`); see README for a small example.
 `swarm_sql.py` takes similar sizing flags (`--clients`, `--writers`, `--gets-per-client`,
@@ -33,9 +37,8 @@ useful behavior checks. There is no linter or formatter configured.
 > **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
 > `Failed to initialize cache ... .git: Operation not permitted` because the sandbox blocks `.git`
 > files (uv's package cache contains some). Use `uv run --no-cache --no-sync ...` (the env is already
-> synced in `.venv`). This is a sandbox workaround, not a `UV_CACHE_DIR` override — do **not** set
-> `UV_CACHE_DIR`. Connecting to local Oracle on `localhost:1521` works from the sandbox; `.env` reads
-> are blocked, but the code falls back to defaults that match the Docker container.
+> synced in `.venv`). This is a sandbox workaround, not a `UV_CACHE_DIR` override. Do **not** set
+> `UV_CACHE_DIR`. Connecting to local Oracle on `localhost:1521` works from the sandbox.
 
 ### Oracle (optional, for the database source path)
 
@@ -47,18 +50,20 @@ useful behavior checks. There is no linter or formatter configured.
 and granting `SELECT ON V_$DATABASE` (needed for `current_scn`). Oracle connection settings are read
 from CLI flags, then overridden by a `.env` file (see `database/oracle_env.py`, keys `ORACLE_HOST`,
 `ORACLE_PORT`, `ORACLE_SERVICE`, `ORACLE_USER`, `ORACLE_PASSWORD`, `ORACLE_TABLE`, `ORACLE_BATCH_SIZE`).
+The `.env` file wins when present.
 
 ```bash
-uv run -m database.oracle_write_container          # generate a DataContainer and load it into Oracle
-uv run -m database.oracle_write <parquet_path>     # load an existing parquet into Oracle
-uv run -m database.oracle_read "<SQL>"             # read SQL via the cache (logs Oracle miss vs cache hit)
+uv run --no-cache --no-sync python -m database.oracle_write_container
+uv run --no-cache --no-sync python -m database.oracle_write parquet/A_TEST_1048576.parquet
+uv run --no-cache --no-sync python -m database.oracle_read "select * from A_TEST_1048576"
+uv run --no-cache --no-sync python -m swarm_sql
 ```
 
 `oracle_read` goes *through the cache*: a miss logs `Serving from Oracle (cache miss): ...`, a hit
 logs `Returning cached object: sql/<TABLE>/<hash>.parquet version=<TABLE>@SCN:<scn>|ROWS:<n>`. To see a
 full cold -> warm -> reload cycle, run it twice, then `oracle_write_container` (advances the SCN), then
-run it again. Note: the `--host/--port/--user/...` flags on `oracle_read` only affect the (unused)
-direct path; the cached read takes connection settings from `oracle_args()` (defaults + `.env`).
+run it again. `oracle_read` currently takes its cached connection settings from `oracle_args()`
+(defaults plus `.env`), so `.env` is the authoritative connection override.
 
 ## Architecture
 
@@ -118,6 +123,8 @@ in batches; they print `current_scn` before/after to demonstrate the SCN-based v
 `oracle_read.py` wires the SQL cache to Oracle (sets `connect_factory`, decorates with
 `nfscache.sql`). `oracle_env.py` is a tiny dependency-free `.env` reader (no python-dotenv);
 it degrades to defaults when `.env` is missing **or unreadable** rather than crashing.
+`swarm_sql.py` creates a test table, runs `@nfscache.sql` clients in separate processes, and rewrites
+the table between read waves to verify SQL cache invalidation under load.
 
 ### Caveats / WIP
 
