@@ -5,8 +5,9 @@ from pathlib import Path
 import oracledb
 import polars as pl
 
-from database.oracle_env import apply_dotenv
+from nfscache.database.oracle_env import apply_dotenv
 from nfscache.data.data_container import DataContainer
+from nfscache.util.generate_parquets import ensure_one_parquet
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
 
@@ -30,10 +31,6 @@ def oracle_identifier(name: str) -> str:
     return name.upper()
 
 
-def table_name_from_path(path: Path) -> str:
-    return oracle_identifier(path.stem)
-
-
 def oracle_type(dtype: pl.DataType) -> str:
     if dtype in INTEGER_TYPES:
         return "NUMBER(38)"
@@ -50,12 +47,6 @@ def oracle_type(dtype: pl.DataType) -> str:
     return "CLOB"
 
 
-def read_data_container(path: Path) -> DataContainer:
-    print(f"Reading: {path}...")
-    df = pl.read_parquet(path)
-    return DataContainer({"headers": tuple(df.columns), "data": df})
-
-
 def connect(args: argparse.Namespace) -> oracledb.Connection:
     dsn = f"{args.host}:{args.port}/{args.service}"
     return oracledb.connect(
@@ -63,6 +54,22 @@ def connect(args: argparse.Namespace) -> oracledb.Connection:
         password=args.password,
         dsn=dsn,
     )
+
+
+def make_data_container(args: argparse.Namespace) -> tuple[Path, DataContainer]:
+    path = ensure_one_parquet(
+        out_dir=Path(args.data_dir),
+        base_name=f"ORACLE_TEST_{args.rows}.parquet",
+        prefix="A_",
+        n_rows=int(args.rows),
+        n_cols=int(args.cols),
+        seed=None,
+        float_scale=float(args.float_scale),
+        n_int_cols=int(args.n_int_cols),
+        n_str_cols=int(args.n_str_cols),
+    )
+    df = pl.read_parquet(path)
+    return path, DataContainer({"headers": tuple(df.columns), "data": df})
 
 
 def current_scn(connection: oracledb.Connection) -> int:
@@ -129,19 +136,21 @@ def insert_data_container(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read a parquet-backed DataContainer and write it to Oracle."
+        description="Generate a DataContainer and write it to the local Oracle DB."
     )
-    parser.add_argument("parquet_path", type=Path)
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=1521)
     parser.add_argument("--service", default="FREEPDB1")
     parser.add_argument("--user", default="SOMEUSER")
     parser.add_argument("--password", default="cache")
-    parser.add_argument(
-        "--table",
-        help="Oracle table name. Defaults to the parquet file stem.",
-    )
+    parser.add_argument("--table", default="DATA_CONTAINER_DEMO")
+    parser.add_argument("--rows", type=int, default=4096)
+    parser.add_argument("--cols", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1000)
+    parser.add_argument("--data-dir", default="parquet")
+    parser.add_argument("--float-scale", type=float, default=5.0)
+    parser.add_argument("--n-int-cols", type=int, default=4)
+    parser.add_argument("--n-str-cols", type=int, default=8)
     args = parser.parse_args()
     apply_dotenv(args)
     return args
@@ -149,18 +158,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    path = args.parquet_path
-    table_name = (
-        oracle_identifier(args.table)
-        if args.table is not None
-        else table_name_from_path(path)
-    )
-    data_container = read_data_container(path)
+    table_name = oracle_identifier(args.table)
+    path, data_container = make_data_container(args)
     df = data_container.data.rows_data_pl
     if not isinstance(df, pl.DataFrame):
         raise TypeError("DataContainer.data.rows_data_pl must be a Polars DataFrame")
 
-    print(f"DataContainer: rows={df.height} cols={df.width}")
+    print(f"Generated: {path} rows={df.height} cols={df.width}")
     with connect(args) as connection:
         before_scn = current_scn(connection)
         print(f"Oracle current_scn before write: {before_scn}")

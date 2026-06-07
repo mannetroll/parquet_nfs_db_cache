@@ -56,7 +56,7 @@ Behavior checks
 Useful commands:
 
   uv run --no-cache --no-sync python -m unittest discover -s tests
-  uv run --no-cache --no-sync python -m compileall -q nfscache database tests
+  uv run --no-cache --no-sync python -m compileall -q nfscache tests
   uv run --no-cache --no-sync python -m nfscache.util.main
   uv run --no-cache --no-sync python -m nfscache.util.swarm_file
   uv run --no-cache --no-sync python -m nfscache.util.swarm_sql

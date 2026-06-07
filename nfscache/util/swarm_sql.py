@@ -8,8 +8,8 @@ from pathlib import Path
 import oracledb
 import polars as pl
 
-from database.oracle_env import apply_dotenv
-from database.oracle_pool import make_pool_factory
+from nfscache.database.oracle_env import apply_dotenv
+from nfscache.database.oracle_pool import make_pool_factory
 from nfscache.data.data_container import DataContainer
 from nfscache.nfs_cache import NFSCache
 

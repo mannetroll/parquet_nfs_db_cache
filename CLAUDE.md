@@ -20,7 +20,7 @@ uv run --no-cache --no-sync python -m nfscache.util.main
 uv run --no-cache --no-sync python -m nfscache.util.swarm_file
 uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 uv run --no-cache --no-sync python -m unittest discover -s tests
-uv run --no-cache --no-sync python -m compileall -q nfscache database tests
+uv run --no-cache --no-sync python -m compileall -q nfscache tests
 uv run --no-cache --no-sync python -m nfscache.util.generate_parquets [--seed N]
 ```
 
@@ -31,7 +31,7 @@ uv run --no-cache --no-sync python -m nfscache.util.generate_parquets [--seed N]
 `--generations`, `--n-rows`, `--batch-size`, `--table`, `--cache-dir`) and requires Oracle.
 
 The project has focused `unittest` coverage under `tests/` for metadata integrity and locking.
-`main.py`, `swarm_file.py`, `swarm_sql.py`, and the `database.oracle_read` cold/warm logging are still
+`main.py`, `swarm_file.py`, `swarm_sql.py`, and the `nfscache.database.oracle_read` cold/warm logging are still
 useful behavior checks. There is no linter or formatter configured.
 
 > **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
@@ -48,14 +48,14 @@ useful behavior checks. There is no linter or formatter configured.
 
 `init/001_create_user_and_privs.sql` runs once on first DB init, creating user `SOMEUSER`/`cache`
 and granting `SELECT ON V_$DATABASE` (needed for `current_scn`). Oracle connection settings are read
-from CLI flags, then overridden by a `.env` file (see `database/oracle_env.py`, keys `ORACLE_HOST`,
+from CLI flags, then overridden by a `.env` file (see `nfscache/database/oracle_env.py`, keys `ORACLE_HOST`,
 `ORACLE_PORT`, `ORACLE_SERVICE`, `ORACLE_USER`, `ORACLE_PASSWORD`, `ORACLE_TABLE`, `ORACLE_BATCH_SIZE`).
 The `.env` file wins when present.
 
 ```bash
-uv run --no-cache --no-sync python -m database.oracle_write_container
-uv run --no-cache --no-sync python -m database.oracle_write parquet/A_TEST_1048576.parquet
-uv run --no-cache --no-sync python -m database.oracle_read "select * from A_TEST_1048576"
+uv run --no-cache --no-sync python -m nfscache.database.oracle_write_container
+uv run --no-cache --no-sync python -m nfscache.database.oracle_write parquet/A_TEST_1048576.parquet
+uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * from A_TEST_1048576"
 uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 ```
 
@@ -82,7 +82,7 @@ version_fn, load_fn)` flow — they differ only in how the cache key and source 
   `NFSCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
 
 `connect_factory` is an opaque `Callable[[], connection]` set on the `NFSCache` instance (see
-`database/oracle_read.py`, which assigns `nfscache.connect_factory = lambda: connect(oracle_args())`).
+`nfscache/database/oracle_read.py`, which assigns `nfscache.connect_factory = lambda: connect(oracle_args())`).
 It is kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
 
 Key mechanics to understand before changing:
@@ -116,7 +116,7 @@ Key mechanics to understand before changing:
 - `DataHolder` (`data_holder.py`): `.headers` (tuple) and `.rows_data_pl` (the Polars DataFrame).
   This `data.rows_data_pl` path is what the cache reads/writes — keep it a `pl.DataFrame`.
 
-### Database layer: `database/`
+### Database layer: `nfscache/database/`
 
 Each `oracle_*.py` is a self-contained CLI. `oracle_write*.py` map Polars dtypes to Oracle DDL
 (`oracle_type`), validate identifiers (`oracle_identifier`), create/drop the table, and `executemany`

@@ -160,7 +160,7 @@ normalized SQL metadata, overlapping warm readers, and writer-preference
 locking. A syntax check for all modules:
 
 ```bash
-uv run --no-cache --no-sync python -m compileall -q nfscache database tests
+uv run --no-cache --no-sync python -m compileall -q nfscache tests
 ```
 
 ## Generate Parquets
@@ -191,13 +191,13 @@ Start the local Oracle demo container:
 Populate the demo table:
 
 ```bash
-uv run --no-cache --no-sync python -m database.oracle_write_container
+uv run --no-cache --no-sync python -m nfscache.database.oracle_write_container
 ```
 
 Read through the SQL cache:
 
 ```bash
-uv run --no-cache --no-sync python -m database.oracle_read "select * from DATA_CONTAINER_DEMO"
+uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * from DATA_CONTAINER_DEMO"
 ```
 
 SQL cache keys use normalized SQL plus requested columns. Metadata stores the

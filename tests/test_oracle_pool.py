@@ -2,7 +2,7 @@ import argparse
 import unittest
 from unittest import mock
 
-from database import oracle_pool
+from nfscache.database import oracle_pool
 
 
 class FakePool:
