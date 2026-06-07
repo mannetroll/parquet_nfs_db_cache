@@ -9,6 +9,7 @@ import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
+from database.oracle_pool import make_pool_factory
 from disk_cache.data.data_container import DataContainer
 from disk_cache.nfs_cache import NFSCache
 
@@ -141,14 +142,17 @@ def _fetch_data_container(
 
 
 def load_data_container(sql: str, cache_dir: Path, batch_size: int) -> DataContainer:
+    args = oracle_args(batch_size=batch_size)
+    # One process-local pool serves both the version probe and the cold fetch;
+    # get_pool memoizes per process, so this is built once per worker.
+    factory = make_pool_factory(args)
     nfscache = NFSCache(cache_dir)
-    nfscache.connect_factory = lambda: connect(oracle_args(batch_size=batch_size))
+    nfscache.connect_factory = factory
 
     @nfscache.sql
     def load(sql: str) -> DataContainer:
         print(f"[pid {os.getpid()}] Reading Oracle: {sql}", flush=True)
-        args = oracle_args(batch_size=batch_size)
-        with connect(args) as connection:
+        with factory() as connection:
             return _fetch_data_container(connection, sql, batch_size=batch_size)
 
     return load(sql)

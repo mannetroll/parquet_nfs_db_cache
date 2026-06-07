@@ -3,6 +3,7 @@ import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
+from database.oracle_pool import make_pool_factory
 from main import nfscache
 from disk_cache.data.data_container import DataContainer
 
@@ -53,8 +54,9 @@ def _fetch_data_container(
     return DataContainer({"headers": headers, "data": df})
 
 
-# Let the cache read the source version (MAX(ORA_ROWSCN)) on its own connection.
-nfscache.connect_factory = lambda: connect(oracle_args())
+# Pool-backed factory: the version probe (every call) and the cold-load fetch
+# both borrow from one process-local pool instead of opening a fresh connection.
+nfscache.connect_factory = make_pool_factory(oracle_args())
 
 
 @nfscache.sql
@@ -62,7 +64,7 @@ def read_data_container(sql: str) -> DataContainer:
     # This body only runs on a cache miss, so reaching it means a live read.
     print(f"Serving from Oracle (cache miss): {sql}", flush=True)
     args = oracle_args()
-    with connect(args) as connection:
+    with nfscache.connect_factory() as connection:
         return _fetch_data_container(
             connection,
             sql,

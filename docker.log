@@ -13,3 +13,7 @@ uv run -m database.oracle_read "select * from A_TEST_1048576"
 uv run -m swarm_sql --n-rows 1000000 --batch-size 100000
 
 run codex resume 019e9d1f-83b3-7730-a4f5-b48d0dbbeade
+
+Question: is this DB(sql) nfs_cache good enough for testing?
+
+uv run --no-cache --no-sync python -m unittest discover -s tests -v
