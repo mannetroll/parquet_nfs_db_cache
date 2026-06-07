@@ -39,6 +39,9 @@ nfscache = "nfscache.util.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["nfscache"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["CLAUDE.md", "AGENTS.md", "parquet_backed_disk_cache.txt"]
+
 [dependency-groups]
 dev = [
     "build>=1.5.0",
