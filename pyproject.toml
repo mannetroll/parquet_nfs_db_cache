@@ -10,16 +10,27 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
+keywords = ["cache", "parquet", "polars", "nfs", "dataframe", "oracle", "concurrency"]
 
 authors = [
-  { name = "Torbjörn Sjögren" }
+    { name = "Torbjörn Sjögren" }
 ]
 
 dependencies = [
-  "numpy>=2.4.6,<3",
-  "oracledb>=3.4.2,<4",
-  "polars>=1.41.2,<2",
-  "pyarrow>=24.0.0,<25",
+    "numpy>=2.4.6,<3",
+    "oracledb>=3.4.2,<4",
+    "polars>=1.41.2,<2",
+    "pyarrow>=24.0.0,<25",
+]
+
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: System :: Filesystems",
+    "Typing :: Typed",
 ]
 
 [project.scripts]
