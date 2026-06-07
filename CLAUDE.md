@@ -17,15 +17,18 @@ This project uses `uv` (Python 3.13). Dependencies live in `pyproject.toml` / `u
 ```bash
 uv run -m main          # demo: cold load -> warm hit -> source change -> reload -> warm hit
 uv run -m swarm_file    # multi-process concurrency test (4 clients, 12 get waves, 6 regenerations)
+uv run -m swarm_sql     # Oracle SQL concurrency test with clients reading while writers rewrite the table
 uv run python -m disk_cache.util.generate_parquets [--seed N]   # (re)generate test parquet files
 ```
 
 `swarm_file.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
 `--generations`, `--n-rows`, `--cols`, `--data-dir`, `--cache-dir`); see README for a small example.
+`swarm_sql.py` takes similar sizing flags (`--clients`, `--writers`, `--gets-per-client`,
+`--generations`, `--n-rows`, `--batch-size`, `--table`, `--cache-dir`) and requires Oracle.
 
 The project has focused `unittest` coverage under `tests/` for metadata integrity and locking.
-`main.py`, `swarm_file.py`, and the `database.oracle_read` cold/warm logging are still useful behavior
-checks. There is no linter or formatter configured.
+`main.py`, `swarm_file.py`, `swarm_sql.py`, and the `database.oracle_read` cold/warm logging are still
+useful behavior checks. There is no linter or formatter configured.
 
 > **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
 > `Failed to initialize cache ... .git: Operation not permitted` because the sandbox blocks `.git`

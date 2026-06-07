@@ -45,6 +45,8 @@ Behavior checks
 - main.py clears __cache__ at startup, then demonstrates cold load, warm hit,
   source regeneration, stale invalidation, reload, and warm hit.
 - swarm_file.py exercises multi-process cache use and source regeneration.
+- swarm_sql.py exercises Oracle SQL cache use while writer processes rewrite
+  the source table under client read load.
 - tests/ contains focused unittest coverage for authoritative metadata,
   corrupted cache recovery, normalized SQL metadata, overlapping warm readers,
   and writer-preference locking.
@@ -52,9 +54,10 @@ Behavior checks
 Useful commands:
 
   uv run --no-cache --no-sync python -m unittest discover -s tests
-  uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py
+  uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py swarm_sql.py
   uv run --no-cache --no-sync python -m main
   uv run --no-cache --no-sync python -m swarm_file
+  uv run --no-cache --no-sync python -m swarm_sql
 
 What is left to be enterprise-ready
 -----------------------------------

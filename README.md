@@ -115,6 +115,36 @@ Swarm output includes:
 - warm `Returning cached object: ... sha=...` hits
 - final multi-client warm check
 
+## SQL Swarm Test
+
+`swarm_sql.py` tests the same process-level concurrency path for Oracle-backed
+SQL reads. It creates an Oracle table, runs client reads through `@nfscache.sql`,
+and rewrites the table between read waves so the cache has to invalidate and
+reload under load.
+
+Start Oracle first, then run:
+
+```bash
+uv run --no-cache --no-sync python -m swarm_sql
+```
+
+Useful smaller run:
+
+```bash
+uv run --no-cache --no-sync python -m swarm_sql \
+  --clients 2 \
+  --writers 1 \
+  --gets-per-client 3 \
+  --generations 2 \
+  --n-rows 128 \
+  --batch-size 64 \
+  --table SWARM_SQL_TEST \
+  --cache-dir /tmp/parquet-nfs-swarm-sql-cache
+```
+
+SQL swarm output includes Oracle cold reads, writer SCNs, stale SQL cache
+invalidation, warm cache hits, and a final multi-client warm check.
+
 ## Tests
 
 Run focused unit tests:
@@ -128,7 +158,7 @@ normalized SQL metadata, overlapping warm readers, and writer-preference
 locking. A syntax check for all modules:
 
 ```bash
-uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py
+uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py swarm_sql.py
 ```
 
 ## Generate Parquets
