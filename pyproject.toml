@@ -20,3 +20,9 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["database", "disk_cache"]
+
+[dependency-groups]
+dev = [
+    "build>=1.5.0",
+    "twine>=6.2.0",
+]
