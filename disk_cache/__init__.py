@@ -1,3 +1,3 @@
-from disk_cache.nfs_cache import DBCache
+from disk_cache.nfs_cache import NFSCache
 
-__all__ = ["DBCache"]
+__all__ = ["NFSCache"]

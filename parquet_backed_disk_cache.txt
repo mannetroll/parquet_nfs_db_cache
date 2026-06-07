@@ -11,8 +11,8 @@ Parquet cache file from an NFS-mounted shared directory with Polars.
 Current implementation
 ----------------------
 
-- DBCache exposes two decorators:
-  - @dbcache.parquet for file or function sources.
+- NFSCache exposes two decorators:
+  - @nfscache.parquet for file or function sources.
   - @nfscache.sql for Oracle SQL sources.
 - Data is persisted with pyarrow.parquet.ParquetWriter and read with
   polars.read_parquet.

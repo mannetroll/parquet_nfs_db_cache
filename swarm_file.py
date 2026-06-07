@@ -10,14 +10,14 @@ from pathlib import Path
 import polars as pl
 
 from disk_cache.data.data_container import DataContainer
-from disk_cache.nfs_cache import DBCache
+from disk_cache.nfs_cache import NFSCache
 from disk_cache.util.generate_parquets import ensure_one_parquet
 
 
 def load_data_container(path: Path, cache_dir: Path) -> DataContainer:
-    dbcache = DBCache(cache_dir)
+    nfscache = NFSCache(cache_dir)
 
-    @dbcache.parquet
+    @nfscache.parquet
     def load(filename: Path) -> DataContainer:
         print(f"[pid {os.getpid()}] Reading: {filename}...", flush=True)
         df = pl.read_parquet(filename)

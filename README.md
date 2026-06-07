@@ -9,7 +9,7 @@ file. Warm loads use `polars.read_parquet`.
 
 ## Current Functionality
 
-- Decorator API: `@dbcache.parquet` and `@nfscache.sql`.
+- Decorator API: `@nfscache.parquet` and `@nfscache.sql`.
 - Stores `DataContainer.data.rows_data_pl` as a Parquet cache file.
 - Reads cached objects with the fast Polars parquet reader.
 - Writes cached objects with `pyarrow.parquet.ParquetWriter`.

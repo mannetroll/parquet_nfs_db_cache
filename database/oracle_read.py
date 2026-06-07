@@ -5,7 +5,7 @@ import oracledb
 import polars as pl
 
 from database.oracle_env import apply_dotenv
-from main import dbcache as nfscache
+from main import nfscache
 from disk_cache.data.data_container import DataContainer
 
 DEFAULT_BATCH_SIZE = 10000

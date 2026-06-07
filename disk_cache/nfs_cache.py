@@ -39,7 +39,7 @@ class _LockLease:
         self.thread = thread
 
 
-class DBCache:
+class NFSCache:
     # Cache-key version stamp for a table source. ORA_ROWSCN advances on any
     # change to a row's block, so MAX(ORA_ROWSCN) is a cheap version token; the
     # row count guards against table swaps that do not advance the SCN.

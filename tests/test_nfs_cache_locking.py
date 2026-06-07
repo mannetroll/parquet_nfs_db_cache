@@ -13,10 +13,10 @@ from pathlib import Path
 import polars as pl
 
 from disk_cache.data.data_container import DataContainer
-from disk_cache.nfs_cache import DBCache
+from disk_cache.nfs_cache import NFSCache
 
 
-class ObservedReadCache(DBCache):
+class ObservedReadCache(NFSCache):
     def __init__(self, cache_dir: Path) -> None:
         super().__init__(cache_dir, poll_seconds=0.005)
         self.active_readers = 0
@@ -38,10 +38,10 @@ class ObservedReadCache(DBCache):
                 self.active_readers -= 1
 
 
-class DBCacheLockingTests(unittest.TestCase):
+class NFSCacheLockingTests(unittest.TestCase):
     def test_lock_metadata_is_written_for_reader_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = DBCache(Path(tmp) / "cache", poll_seconds=0.005)
+            cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
             lock_path = Path(tmp) / "entry.parquet.lock"
             reader_lease = cache._acquire_read_lock(lock_path)
             try:
@@ -82,7 +82,7 @@ class DBCacheLockingTests(unittest.TestCase):
 
     def test_writer_intent_blocks_new_readers_until_existing_readers_finish(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = DBCache(Path(tmp) / "cache", poll_seconds=0.005)
+            cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
             lock_path = Path(tmp) / "entry.parquet.lock"
             first_reader = cache._acquire_read_lock(lock_path)
             writer_acquired = threading.Event()
@@ -131,7 +131,7 @@ class DBCacheLockingTests(unittest.TestCase):
 
     def test_stale_writer_intent_is_broken_for_new_reader(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = DBCache(
+            cache = NFSCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=0.01,
@@ -150,7 +150,7 @@ class DBCacheLockingTests(unittest.TestCase):
 
     def test_stale_reader_token_is_broken_for_writer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = DBCache(
+            cache = NFSCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=0.01,
@@ -169,7 +169,7 @@ class DBCacheLockingTests(unittest.TestCase):
 
     def test_heartbeat_keeps_live_lock_from_becoming_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = DBCache(
+            cache = NFSCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=0.2,

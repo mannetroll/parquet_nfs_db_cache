@@ -59,21 +59,21 @@ direct path; the cached read takes connection settings from `oracle_args()` (def
 
 ## Architecture
 
-### Core: `disk_cache/nfs_cache.py` — `DBCache`
+### Core: `disk_cache/nfs_cache.py` — `NFSCache`
 
 The whole caching engine is one class exposing **two decorators** that wrap any
 `Callable[..., DataContainer]`. The wrapped function is the cold-load source; the decorator handles
 locking, invalidation, read, and write. Both funnel into the shared `_run_cached(display_key,
 version_fn, load_fn)` flow — they differ only in how the cache key and source version are derived:
 
-- `@dbcache.parquet` — for file/in-process sources. Key and version come from
+- `@nfscache.parquet` — for file/in-process sources. Key and version come from
   the decorated call's `filename` argument.
 - `@nfscache.sql` — for SQL sources. First arg is the SQL string (optional
   `return_cols=` kwarg). Key is `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read
   from Oracle as `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
-  `DBCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
+  `NFSCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
 
-`connect_factory` is an opaque `Callable[[], connection]` set on the `DBCache` instance (see
+`connect_factory` is an opaque `Callable[[], connection]` set on the `NFSCache` instance (see
 `database/oracle_read.py`, which assigns `nfscache.connect_factory = lambda: connect(oracle_args())`).
 It is kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
 

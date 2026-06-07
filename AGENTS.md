@@ -20,7 +20,7 @@ When running `uv` inside restricted agent sandboxes, prefer `uv run --no-cache -
 
 ## Coding Style & Naming Conventions
 
-Use standard Python style with 4-space indentation, descriptive snake_case names, and small functions that keep cache, data model, and Oracle concerns separated. Preserve the decorator API (`@dbcache.parquet`, `@nfscache.sql`) and the `DataContainer.data.rows_data_pl` contract. Keep lock changes conservative: reader tokens and writer intent are directory locks with `lock.json` heartbeat metadata. No formatter or linter is configured; keep imports tidy and avoid unrelated rewrites.
+Use standard Python style with 4-space indentation, descriptive snake_case names, and small functions that keep cache, data model, and Oracle concerns separated. Preserve the decorator API (`@nfscache.parquet`, `@nfscache.sql`) and the `DataContainer.data.rows_data_pl` contract. Keep lock changes conservative: reader tokens and writer intent are directory locks with `lock.json` heartbeat metadata. No formatter or linter is configured; keep imports tidy and avoid unrelated rewrites.
 
 ## Testing Guidelines
 

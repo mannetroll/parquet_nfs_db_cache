@@ -8,16 +8,16 @@ from pathlib import Path
 import polars as pl
 
 from disk_cache.data.data_container import DataContainer
-from disk_cache.nfs_cache import DBCache
+from disk_cache.nfs_cache import NFSCache
 
 
-class DBCacheMetadataTests(unittest.TestCase):
+class NFSCacheMetadataTests(unittest.TestCase):
     def test_metadata_contains_authoritative_fields_and_warms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_path = tmp_path / "source.txt"
             source_path.write_text("v1", encoding="utf-8")
-            cache = DBCache(tmp_path / "cache")
+            cache = NFSCache(tmp_path / "cache")
             calls = 0
 
             @cache.parquet
@@ -56,7 +56,7 @@ class DBCacheMetadataTests(unittest.TestCase):
             tmp_path = Path(tmp)
             source_path = tmp_path / "source.txt"
             source_path.write_text("v1", encoding="utf-8")
-            cache = DBCache(tmp_path / "cache")
+            cache = NFSCache(tmp_path / "cache")
             calls = 0
 
             @cache.parquet
@@ -83,7 +83,7 @@ class DBCacheMetadataTests(unittest.TestCase):
             tmp_path = Path(tmp)
             source_path = tmp_path / "source.txt"
             source_path.write_text("v1", encoding="utf-8")
-            cache = DBCache(tmp_path / "cache")
+            cache = NFSCache(tmp_path / "cache")
             calls = 0
 
             @cache.parquet
@@ -111,7 +111,7 @@ class DBCacheMetadataTests(unittest.TestCase):
             tmp_path = Path(tmp)
             source_path = tmp_path / "source.txt"
             source_path.write_text("v1", encoding="utf-8")
-            cache = DBCache(tmp_path / "cache")
+            cache = NFSCache(tmp_path / "cache")
             calls = 0
 
             class Loader:
@@ -135,7 +135,7 @@ class DBCacheMetadataTests(unittest.TestCase):
     def test_sql_cache_metadata_contains_normalized_sql(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cache = DBCache(tmp_path / "cache")
+            cache = NFSCache(tmp_path / "cache")
             raw_sql = " select  *\nfrom DATA_CONTAINER_DEMO where id = 1; "
             normalized_sql = "select * from DATA_CONTAINER_DEMO where id = 1"
 
