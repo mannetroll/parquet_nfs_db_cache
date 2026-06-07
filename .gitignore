@@ -22,3 +22,5 @@ __cache__/
 .vscode/
 .DS_Store
 *.parquet
+*.env
+
