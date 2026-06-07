@@ -7,6 +7,8 @@ name = "nfscache"
 version = "0.1.0"
 description = "Concurrency-safe, NFS-friendly Parquet cache for Polars DataFrames"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
 
 dependencies = [
