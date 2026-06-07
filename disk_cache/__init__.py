@@ -1,3 +1,3 @@
-from disk_cache.db_cache import DBCache
+from disk_cache.nfs_cache import DBCache
 
 __all__ = ["DBCache"]

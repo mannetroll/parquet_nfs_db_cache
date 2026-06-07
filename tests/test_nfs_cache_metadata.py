@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from disk_cache.data.data_container import DataContainer
-from disk_cache.db_cache import DBCache
+from disk_cache.nfs_cache import DBCache
 
 
 class DBCacheMetadataTests(unittest.TestCase):

@@ -59,7 +59,7 @@ direct path; the cached read takes connection settings from `oracle_args()` (def
 
 ## Architecture
 
-### Core: `disk_cache/db_cache.py` — `DBCache`
+### Core: `disk_cache/nfs_cache.py` — `DBCache`
 
 The whole caching engine is one class exposing **two decorators** that wrap any
 `Callable[..., DataContainer]`. The wrapped function is the cold-load source; the decorator handles
@@ -75,7 +75,7 @@ version_fn, load_fn)` flow — they differ only in how the cache key and source 
 
 `connect_factory` is an opaque `Callable[[], connection]` set on the `DBCache` instance (see
 `database/oracle_read.py`, which assigns `dbcache.connect_factory = lambda: connect(oracle_args())`).
-It is kept generic so `db_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
+It is kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
 
 Key mechanics to understand before changing:
 

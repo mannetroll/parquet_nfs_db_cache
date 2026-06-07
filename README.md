@@ -128,7 +128,7 @@ normalized SQL metadata, overlapping warm readers, and writer-preference
 locking. A syntax check for all modules:
 
 ```bash
-uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm.py
+uv run --no-cache --no-sync python -m compileall -q disk_cache database tests main.py swarm_file.py
 ```
 
 ## Generate Parquets

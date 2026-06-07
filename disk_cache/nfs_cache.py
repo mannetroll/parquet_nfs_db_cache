@@ -23,7 +23,7 @@ from disk_cache.data.data_container import DataContainer
 P = ParamSpec("P")
 
 CACHE_METADATA_VERSION = 1
-CACHE_WRITER_VERSION = "parquet_nfs_db_cache.dbcache.v1"
+CACHE_WRITER_VERSION = "nfscache.v1"
 LOCK_METADATA_VERSION = 1
 
 

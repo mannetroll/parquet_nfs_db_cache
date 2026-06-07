@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Python 3.13 prototype for an NFS-backed Parquet cache around `DataContainer` objects. Core cache logic lives in `disk_cache/db_cache.py`, including authoritative metadata, read/write locking, heartbeats, and stale-lock recovery. Data wrapper types are in `disk_cache/data/`, and parquet generation utilities are in `disk_cache/util/`. Oracle demo and load/read CLIs live in `database/`. Top-level entry points are `main.py` for the local cache demo and `swarm.py` for process-level concurrency checks. Docker/Oracle bootstrap files are `Dockerfile`, `build_and_run.sh`, and `init/001_create_user_and_privs.sql`. Generated runtime data belongs in `parquet/` and `__cache__/`.
+This is a Python 3.13 prototype for an NFS-backed Parquet cache around `DataContainer` objects. Core cache logic lives in `disk_cache/nfs_cache.py`, including authoritative metadata, read/write locking, heartbeats, and stale-lock recovery. Data wrapper types are in `disk_cache/data/`, and parquet generation utilities are in `disk_cache/util/`. Oracle demo and load/read CLIs live in `database/`. Top-level entry points are `main.py` for the local cache demo and `swarm.py` for process-level concurrency checks. Docker/Oracle bootstrap files are `Dockerfile`, `build_and_run.sh`, and `init/001_create_user_and_privs.sql`. Generated runtime data belongs in `parquet/` and `__cache__/`.
 
 ## Build, Test, and Development Commands
 
