@@ -4,7 +4,7 @@ import polars as pl
 
 from nfscache.database.oracle_env import apply_dotenv
 from nfscache.database.oracle_pool import make_pool_factory
-from main import nfscache
+from nfscache.util.main import nfscache
 from nfscache.data.data_container import DataContainer
 
 DEFAULT_BATCH_SIZE = 10000

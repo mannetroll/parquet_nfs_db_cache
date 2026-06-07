@@ -1,4 +1,4 @@
-# parquet_nfs_db_cache
+# nfscache
 
 Prototype NFS-backed cache for `DataContainer` objects whose payload is a
 Polars `DataFrame`.
@@ -6,6 +6,47 @@ Polars `DataFrame`.
 The cache stores container data as Parquet on a shared filesystem. Cold loads
 can read from any slow source, for example Oracle, MySQL, or a local parquet
 file. Warm loads use `polars.read_parquet`.
+
+## Install
+
+```bash
+pip install nfscache
+```
+
+## Usage
+
+Create an `NFSCache` pointed at a directory on the shared filesystem, then wrap
+your cold-load function with a decorator. The wrapped function only runs on a
+cache miss; warm hits are served from the Parquet cache.
+
+```python
+from pathlib import Path
+
+import polars as pl
+
+from nfscache.nfs_cache import NFSCache
+from nfscache.data.data_container import DataContainer
+
+nfscache = NFSCache(Path("__cache__/nfs"))
+
+
+# File / in-process source: cache key and version come from `filename`.
+@nfscache.parquet
+def load(filename: Path) -> DataContainer:
+    df = pl.read_parquet(filename)
+    return DataContainer({"headers": tuple(df.columns), "data": df})
+
+
+container = load(Path("parquet/A_TEST.parquet"))   # cold: runs the body
+container = load(Path("parquet/A_TEST.parquet"))   # warm: served from cache
+df = container.data.rows_data_pl
+```
+
+For SQL sources, set `nfscache.connect_factory` (a `Callable[[], connection]`)
+and use `@nfscache.sql`; the first argument is the SQL string. The cache key is
+derived from the normalized SQL and the source version from
+`MAX(ORA_ROWSCN)` plus the row count. See `nfscache/database/oracle_read.py`
+for a complete Oracle wiring example.
 
 ## Current Functionality
 
