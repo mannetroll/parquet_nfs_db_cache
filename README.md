@@ -104,7 +104,13 @@ __cache__/nfs/parquet/A_TEST_1048576.parquet.meta.json
 
 ## Demo
 
-Run:
+After installing the package, run:
+
+```bash
+nfscache-demo
+```
+
+From a source checkout, the equivalent command is:
 
 ```bash
 uv run --no-cache --no-sync python -m nfscache.util.main
