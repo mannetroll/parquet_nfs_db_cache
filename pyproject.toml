@@ -42,6 +42,7 @@ packages = ["nfscache"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+    ".gitignore",
     "CLAUDE.md",
     "AGENTS.md",
     "Dockerfile",
