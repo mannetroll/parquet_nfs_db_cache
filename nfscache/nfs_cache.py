@@ -814,8 +814,8 @@ class NFSCache:
     # Parameter names the SQL/path arguments may appear under. The decorated
     # function's signature is matched against these so call sites can name the
     # arguments naturally (e.g. `sql_query`, `parquet_path`).
-    _SQL_ARG_NAMES = ("sql", "sql_query", "query")
-    _PATH_ARG_NAMES = ("filename", "parquet_path", "output_path", "output", "path")
+    _SQL_ARG_NAMES = ("sql", "sql_query")
+    _PATH_ARG_NAMES = ("parquet_path", "output_path")
 
     @staticmethod
     def _sql_arg(
