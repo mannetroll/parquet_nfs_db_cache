@@ -13,6 +13,13 @@ file. Warm loads use `polars.read_parquet`.
 pip install nfscache
 ```
 
+The Oracle SQL source path requires the `oracledb` driver, available as the
+`oracle` extra:
+
+```bash
+pip install nfscache[oracle]
+```
+
 ## Usage
 
 Create an `NFSCache` pointed at a directory on the shared filesystem, then wrap
