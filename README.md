@@ -22,40 +22,58 @@ cache miss; warm hits are served from the Parquet cache.
 ```python
 from pathlib import Path
 
-import polars as pl
+import oracledb
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from nfscache.nfs_cache import NFSCache
-from nfscache.data.data_container import DataContainer
 
 nfscache = NFSCache(Path("__cache__/nfs"))
+nfscache.connect_factory = lambda: oracledb.connect(
+    user="SOMEUSER",
+    password="cache",
+    dsn="localhost:1521/FREEPDB1",
+)
 
 
-# File / in-process source: cache key and version come from `filename`.
-@nfscache.parquet
-def load(filename: Path) -> DataContainer:
-    df = pl.read_parquet(filename)
-    return DataContainer({"headers": tuple(df.columns), "data": df})
+# SQL source streamed straight to the cache parquet file. On a warm hit, the
+# function body is skipped and the validated cache file is copied to `filename`
+# through an atomic `*.part` + `os.replace` export.
+@nfscache.sql_parquet
+def stream(sql: str, filename: Path, connection) -> None:
+    table = pa.table({"example": [1, 2, 3]})  # replace with cursor.fetchmany()
+    pq.write_table(table, filename)
 
 
-container = load(Path("parquet/A_TEST.parquet"))   # cold: runs the body
-container = load(Path("parquet/A_TEST.parquet"))   # warm: served from cache
-df = container.data.rows_data_pl
+with nfscache.connect_factory() as connection:
+    stream(
+        "select * from DATA_CONTAINER_DEMO",
+        Path("DATA_CONTAINER_DEMO.parquet"),
+        connection,
+    )
 ```
 
 For SQL sources, set `nfscache.connect_factory` (a `Callable[[], connection]`)
-and use `@nfscache.sql`; the first argument is the SQL string. The cache key is
-derived from the normalized SQL and the source version from
-`MAX(ORA_ROWSCN)` plus the row count. See `nfscache/database/oracle_read.py`
-for a complete Oracle wiring example.
+and use `@nfscache.sql_parquet` when the cold load should stream directly into
+the cache parquet file. The first argument is the SQL string, and the second is
+the requested output filename. The cache key is derived from the normalized SQL
+and the source version from `MAX(ORA_ROWSCN)` plus the row count. See
+`nfscache/database/oracle_streaming.py` for a complete Oracle streaming example.
+Use `@nfscache.sql` instead when the cold load returns a materialized
+`DataContainer`; see `nfscache/database/oracle_read.py`.
 
 ## Current Functionality
 
-- Decorator API: `@nfscache.parquet` and `@nfscache.sql`.
-- Stores `DataContainer.data.rows_data_pl` as a Parquet cache file.
+- Decorator API: `@nfscache.sql_parquet`, `@nfscache.sql`, and
+  `@nfscache.parquet`.
+- Stores `DataContainer.data.rows_data_pl` as a Parquet cache file, or streams
+  SQL results directly into a cached Parquet file with `@nfscache.sql_parquet`.
 - Reads cached objects with the fast Polars parquet reader.
 - Writes cached objects with `pyarrow.parquet.ParquetWriter`.
 - Writes through unique `*.part` files, then atomically replaces the final file
   with `os.replace`.
+- Exports `@nfscache.sql_parquet` results by copying the validated cache file to
+  an output `*.part` file, then atomically replacing the requested output path.
 - Cleans up partial cache files on write failure.
 - Uses a per-cache-key mkdir-based read/write lock: warm readers create
   per-reader tokens and can overlap, while writers and invalidations block new
@@ -235,7 +253,15 @@ Populate the demo table:
 uv run --no-cache --no-sync python -m nfscache.database.oracle_write_container
 ```
 
-Read through the SQL cache:
+Stream Oracle SQL directly through the SQL Parquet cache:
+
+```bash
+uv run --no-cache --no-sync python -m nfscache.database.oracle_streaming \
+  "select * from DATA_CONTAINER_DEMO" \
+  DATA_CONTAINER_DEMO.parquet
+```
+
+Read into a materialized `DataContainer` through the SQL cache:
 
 ```bash
 uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * from DATA_CONTAINER_DEMO"
@@ -243,7 +269,9 @@ uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * fr
 
 SQL cache keys use normalized SQL plus requested columns. Metadata stores the
 normalized `source_sql`, and source versions use `COUNT(*)` plus
-`MAX(ORA_ROWSCN)` for the detected `FROM` table.
+`MAX(ORA_ROWSCN)` for the detected `FROM` table. `@nfscache.sql_parquet`
+stores the streamed Parquet file in the cache first, then atomically exports a
+copy to the requested output path.
 
 ## Production Notes
 
