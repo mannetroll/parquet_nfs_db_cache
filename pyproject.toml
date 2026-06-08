@@ -34,7 +34,7 @@ classifiers = [
 ]
 
 [project.scripts]
-nfscache = "nfscache.util.main:main"
+nfscache-demo = "nfscache.util.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nfscache"]
