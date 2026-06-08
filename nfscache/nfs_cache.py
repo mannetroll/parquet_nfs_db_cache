@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -114,6 +115,44 @@ class NFSCache:
 
         return wrapper
 
+    def sql_parquet[**P](
+        self,
+        func: Callable[P, object],
+    ) -> Callable[P, Path]:
+        signature = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Path:
+            args_tuple = tuple(args)
+            kwargs_dict = dict(kwargs)
+            sql = self._sql_arg(signature, args_tuple, kwargs_dict)
+            output_path = Path(
+                self._filename_arg(signature, args_tuple, kwargs_dict)
+            )
+            normalized_sql = self._normalize_sql(str(sql))
+            return_cols = kwargs_dict.get("return_cols")
+            display_key = self._sql_display_key(normalized_sql, return_cols)
+
+            def write_part(part_path: Path) -> None:
+                part_args, part_kwargs = self._replace_filename_arg(
+                    signature,
+                    args_tuple,
+                    kwargs_dict,
+                    part_path,
+                )
+                func(*part_args, **part_kwargs)
+
+            cache_path = self._run_cached_parquet(
+                display_key,
+                lambda: self._sql_source_version(normalized_sql),
+                write_part,
+                source_sql=normalized_sql,
+            )
+            self._copy_cached_parquet(cache_path, output_path)
+            return output_path
+
+        return wrapper
+
     def _run_cached(
         self,
         display_key: str,
@@ -174,6 +213,79 @@ class NFSCache:
                 self._remove_file(part_path)
                 self._remove_file(meta_part_path)
                 raise
+        finally:
+            self._release_write_lock(writer_lease)
+
+    def _run_cached_parquet(
+        self,
+        display_key: str,
+        version_fn: Callable[[], str | None],
+        write_fn: Callable[[Path], None],
+        *,
+        source_sql: str | None,
+    ) -> Path:
+        cache_path = self._cache_path(display_key)
+        meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
+        lock_path = cache_path.with_name(f"{cache_path.name}.lock")
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        source_version = version_fn()
+        reader_lease = self._acquire_read_lock(lock_path)
+        try:
+            cached_path = self._cached_parquet_path_if_valid(
+                cache_path,
+                meta_path,
+                display_key,
+                source_version,
+                source_sql,
+            )
+            if cached_path is not None:
+                return cached_path
+        finally:
+            self._release_read_lock(reader_lease)
+
+        writer_lease = self._acquire_write_lock(lock_path)
+        try:
+            source_version = version_fn()
+            cached_path = self._cached_parquet_path_if_valid(
+                cache_path,
+                meta_path,
+                display_key,
+                source_version,
+                source_sql,
+            )
+            if cached_path is not None:
+                return cached_path
+
+            while True:
+                part_path = self._part_path(cache_path)
+                meta_part_path = self._part_path(meta_path)
+                try:
+                    source_version_before = version_fn()
+                    write_fn(part_path)
+                    source_version_after = version_fn()
+                    if source_version_before == source_version_after:
+                        self._write_parquet_file_entry(
+                            part_path,
+                            cache_path,
+                            meta_part_path,
+                            meta_path,
+                            display_key,
+                            source_version_after,
+                            source_sql,
+                        )
+                        return cache_path
+
+                    print(
+                        "Source changed while streaming; retrying cold load...",
+                        flush=True,
+                    )
+                    self._remove_file(part_path)
+                    self._remove_file(meta_part_path)
+                except Exception:
+                    self._remove_file(part_path)
+                    self._remove_file(meta_part_path)
+                    raise
         finally:
             self._release_write_lock(writer_lease)
 
@@ -449,6 +561,31 @@ class NFSCache:
         df = pl.read_parquet(cache_path)
         return DataContainer({"headers": tuple(df.columns), "data": df})
 
+    def _cached_parquet_path_if_valid(
+        self,
+        cache_path: Path,
+        meta_path: Path,
+        display_key: str,
+        source_version: str | None,
+        source_sql: str | None,
+    ) -> Path | None:
+        metadata = self._read_valid_metadata(
+            cache_path,
+            meta_path,
+            display_key,
+            source_version,
+            source_sql,
+        )
+        if metadata is None:
+            return None
+
+        version_preview = self._version_preview(metadata.get("source_version"))
+        print(
+            f"Returning cached object: {display_key}{version_preview}...",
+            flush=True,
+        )
+        return cache_path
+
     def _load_stable(
         self,
         version_fn: Callable[[], str | None],
@@ -504,6 +641,47 @@ class NFSCache:
         except Exception:
             self._remove_file(part_path)
             self._remove_file(meta_part_path)
+            raise
+
+    def _write_parquet_file_entry(
+        self,
+        part_path: Path,
+        cache_path: Path,
+        meta_part_path: Path,
+        meta_path: Path,
+        display_key: str,
+        source_version: str | None,
+        source_sql: str | None,
+    ) -> None:
+        try:
+            parquet_file = pq.ParquetFile(str(part_path))
+            schema = parquet_file.schema_arrow
+            self._write_metadata(
+                meta_part_path,
+                display_key=display_key,
+                cache_path=cache_path,
+                parquet_path=part_path,
+                source_version=source_version,
+                source_sql=source_sql,
+                row_count=parquet_file.metadata.num_rows,
+                column_count=len(schema),
+                schema=schema,
+            )
+            os.replace(part_path, cache_path)
+            os.replace(meta_part_path, meta_path)
+        except Exception:
+            self._remove_file(part_path)
+            self._remove_file(meta_part_path)
+            raise
+
+    def _copy_cached_parquet(self, cache_path: Path, output_path: Path) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_part = self._part_path(output_path)
+        try:
+            shutil.copyfile(cache_path, output_part)
+            os.replace(output_part, output_path)
+        except Exception:
+            self._remove_file(output_part)
             raise
 
     def _write_metadata(
@@ -820,6 +998,17 @@ class NFSCache:
     ) -> object:
         bound = signature.bind_partial(*args, **kwargs)
         return bound.arguments["filename"]
+
+    @staticmethod
+    def _replace_filename_arg(
+        signature: inspect.Signature,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+        filename: Path,
+    ) -> tuple[tuple[object, ...], dict[str, object]]:
+        bound = signature.bind_partial(*args, **kwargs)
+        bound.arguments["filename"] = filename
+        return bound.args, bound.kwargs
 
     @staticmethod
     def _is_complete(path: Path) -> bool:

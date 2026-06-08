@@ -12,6 +12,8 @@ from nfscache.database.oracle_streaming import (
     stream_data_to_parquet,
 )
 
+raw_stream_data_to_parquet = stream_data_to_parquet.__wrapped__
+
 
 def _desc(
     name: str,
@@ -79,14 +81,14 @@ class OracleStreamingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "streamed.parquet"
-            rows, cols = stream_data_to_parquet(
+            raw_stream_data_to_parquet(
                 "select * from demo",
                 path,
                 FakeConnection(cursor),
             )
 
             table = pq.read_table(path)
-            self.assertEqual((rows, cols), (3, 3))
+            self.assertEqual((table.num_rows, table.num_columns), (3, 3))
             self.assertEqual(cursor.executed_sql, "select * from demo")
             self.assertEqual(cursor.arraysize, DEFAULT_BATCH_SIZE)
             self.assertEqual(
@@ -112,15 +114,15 @@ class OracleStreamingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "empty.parquet"
-            rows, cols = stream_data_to_parquet(
+            raw_stream_data_to_parquet(
                 "select * from empty_demo",
                 path,
                 FakeConnection(cursor),
             )
 
             table = pq.read_table(path)
-            self.assertEqual((rows, cols), (0, 2))
             self.assertEqual(table.num_rows, 0)
+            self.assertEqual(table.num_columns, 2)
             self.assertEqual(table.column_names, ["ID", "NAME"])
             self.assertEqual(table.schema.field("ID").type, pa.int64())
             self.assertEqual(table.schema.field("NAME").type, pa.string())
@@ -131,7 +133,7 @@ class OracleStreamingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "no_result.parquet"
             with self.assertRaisesRegex(ValueError, "result set"):
-                stream_data_to_parquet(
+                raw_stream_data_to_parquet(
                     "begin null; end;",
                     path,
                     FakeConnection(cursor),

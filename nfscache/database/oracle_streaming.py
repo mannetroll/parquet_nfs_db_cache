@@ -12,11 +12,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from nfscache.database.oracle_env import apply_dotenv
+from nfscache.nfs_cache import NFSCache
 
+CACHE_ROOT = Path("__cache__")
 DEFAULT_BATCH_SIZE = 100000
 DEFAULT_COMPRESSION = "snappy"
 DEFAULT_SQL = "select * from A_TEST_1048576"
 DEFAULT_OUTPUT = Path("A_TEST_1048576.parquet")
+nfscache = NFSCache(CACHE_ROOT / "nfs")
 
 TEXT_TYPES = {
     oracledb.DB_TYPE_CHAR,
@@ -205,6 +208,7 @@ def _rows_to_table(rows: list[tuple[Any, ...]], schema: pa.Schema) -> pa.Table:
     return pa.Table.from_arrays(arrays, schema=schema)
 
 
+@nfscache.sql_parquet
 def stream_data_to_parquet(
     sql: str,
     filename: Path,
@@ -286,6 +290,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    nfscache.connect_factory = lambda: connect(args)
 
     with connect(args) as connection:
         stream_data_to_parquet(
