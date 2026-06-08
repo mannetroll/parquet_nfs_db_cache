@@ -26,6 +26,11 @@ Create an `NFSCache` pointed at a directory on the shared filesystem, then wrap
 your cold-load function with a decorator. The wrapped function only runs on a
 cache miss; warm hits are served from the Parquet cache.
 
+The example below uses the Oracle SQL source path, so it needs the `oracle`
+extra (`pip install nfscache[oracle]`). For a file-backed source that works with
+the base install, use `@nfscache.parquet` (see
+`nfscache/util/main.py`).
+
 ```python
 from pathlib import Path
 

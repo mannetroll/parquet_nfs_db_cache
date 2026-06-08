@@ -26,4 +26,4 @@ __cache__/
 *.log
 *.txt
 .claude/
-
+uv.lock
