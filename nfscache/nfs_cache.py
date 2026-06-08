@@ -292,19 +292,27 @@ class NFSCache:
     def _acquire_read_lock(self, lock_path: Path) -> _LockLease:
         readers_path = lock_path / "readers"
         writer_path = lock_path / "writer"
+        # Stable token name for this whole acquisition. Generating a fresh UUID
+        # on every retry mints a new directory each spin, which leaks reader
+        # folders on shares where removal is racy (e.g. Windows/SMB).
+        reader_path = readers_path / self._reader_lock_name()
 
         while True:
-            self._ensure_lock_dirs(lock_path)
+            if not self._ensure_lock_dirs(lock_path):
+                time.sleep(self.poll_seconds)
+                continue
             if writer_path.exists():
                 self._break_stale_lock(writer_path)
                 time.sleep(self.poll_seconds)
                 continue
 
-            reader_path = readers_path / self._reader_lock_name()
             try:
                 reader_path.mkdir()
-                reader_lease = self._start_lock_heartbeat(reader_path, "reader")
             except FileExistsError:
+                # Our own token survived a previous iteration (a release that
+                # lost the rmdir race). Clear it and retry rather than spin.
+                self._remove_lock_dir(reader_path)
+                time.sleep(self.poll_seconds)
                 continue
             except FileNotFoundError:
                 time.sleep(self.poll_seconds)
@@ -314,6 +322,13 @@ class NFSCache:
                     time.sleep(self.poll_seconds)
                     continue
                 raise
+
+            try:
+                reader_lease = self._start_lock_heartbeat(reader_path, "reader")
+            except OSError:
+                self._remove_lock_dir(reader_path)
+                time.sleep(self.poll_seconds)
+                continue
 
             if not writer_path.exists():
                 return reader_lease
@@ -326,7 +341,9 @@ class NFSCache:
         writer_path = lock_path / "writer"
 
         while True:
-            self._ensure_lock_dirs(lock_path)
+            if not self._ensure_lock_dirs(lock_path):
+                time.sleep(self.poll_seconds)
+                continue
             try:
                 writer_path.mkdir()
                 writer_lease = self._start_lock_heartbeat(writer_path, "writer")
@@ -355,15 +372,27 @@ class NFSCache:
         reader_path = self._lease_path(lease)
         self._stop_lock_heartbeat(lease)
         lock_path = reader_path.parent.parent
-        self._remove_lock_dir(reader_path)
+        self._remove_lock_dir_resilient(reader_path)
         self._cleanup_lock_dirs(lock_path)
 
     def _release_write_lock(self, lease: _LockLease | Path) -> None:
         writer_path = self._lease_path(lease)
         self._stop_lock_heartbeat(lease)
         lock_path = writer_path.parent
-        self._remove_lock_dir(writer_path)
+        self._remove_lock_dir_resilient(writer_path)
         self._cleanup_lock_dirs(lock_path)
+
+    def _remove_lock_dir_resilient(self, lock_path: Path) -> None:
+        # A heartbeat thread that was mid-write when we asked it to stop can
+        # re-create lock.json after _remove_lock_dir deletes it, leaving a
+        # non-empty dir that rmdir then skips. Retry until the dir is gone so a
+        # stopped lock never lingers and blocks other clients (Windows/SMB).
+        for _ in range(5):
+            self._remove_lock_dir(lock_path)
+            if not lock_path.exists():
+                return
+            time.sleep(self.poll_seconds)
+        self._remove_lock_dir(lock_path)
 
     @staticmethod
     def _lease_path(lease: _LockLease | Path) -> Path:
@@ -375,17 +404,24 @@ class NFSCache:
             return
 
         lease.stop_event.set()
-        lease.thread.join(timeout=2.0)
+        # Join long enough to cover a heartbeat blocked on a slow share write,
+        # so the thread cannot re-create lock.json after we remove the dir.
+        lease.thread.join(timeout=5.0)
 
-    @staticmethod
-    def _ensure_lock_dirs(lock_path: Path) -> None:
+    def _ensure_lock_dirs(self, lock_path: Path) -> bool:
+        # Returns True only when readers/ is confirmed to exist. A transient
+        # mkdir failure (common on NFS/SMB) returns False so the caller retries
+        # rather than racing into a child mkdir that fails with FileNotFoundError.
+        readers_path = lock_path / "readers"
         try:
-            (lock_path / "readers").mkdir(parents=True, exist_ok=True)
+            readers_path.mkdir(parents=True, exist_ok=True)
         except FileExistsError:
-            pass
+            return True
         except OSError as exc:
-            if not NFSCache._is_transient_lock_mkdir_error(exc):
+            if not self._is_transient_lock_mkdir_error(exc):
                 raise
+            return readers_path.exists()
+        return True
 
     def _has_readers(self, readers_path: Path) -> bool:
         has_reader = False
