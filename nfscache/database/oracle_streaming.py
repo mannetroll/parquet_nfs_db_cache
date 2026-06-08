@@ -209,7 +209,7 @@ def stream_data_to_parquet(
     sql: str,
     filename: Path,
     connection: oracledb.Connection,
-) -> tuple[int, int]:
+):
     """Stream an Oracle result set to one Parquet file.
 
     Returns `(row_count, column_count)`.
@@ -267,8 +267,6 @@ def stream_data_to_parquet(
             pass
         raise
 
-    return row_count, len(schema)
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -290,13 +288,13 @@ def main() -> int:
     args = parse_args()
 
     with connect(args) as connection:
-        rows, cols = stream_data_to_parquet(
+        stream_data_to_parquet(
             args.sql,
             args.output,
             connection,
         )
 
-    print(f"Wrote {args.output}: rows={rows} cols={cols}")
+    print(f"Wrote {args.output}")
     return 0
 
 
