@@ -36,6 +36,44 @@ class ObservedReadCache(NFSCache):
                 self.active_readers -= 1
 
 
+class MissingInitialReaderMetadataDirCache(NFSCache):
+    def _start_lock_heartbeat(
+        self,
+        lock_path: Path,
+        lock_type: str,
+        *,
+        create_missing: bool = False,
+    ):
+        if lock_type == "reader" and create_missing:
+            self._remove_lock_dir(lock_path)
+        return super()._start_lock_heartbeat(
+            lock_path,
+            lock_type,
+            create_missing=create_missing,
+        )
+
+
+class BrokenReaderMetadataCache(NFSCache):
+    def _write_lock_metadata(
+        self,
+        lock_path: Path,
+        lock_type: str,
+        lock_uuid: str,
+        created_at: str,
+        *,
+        create_missing: bool = False,
+    ) -> None:
+        if lock_type == "reader":
+            raise PermissionError("metadata write failed")
+        super()._write_lock_metadata(
+            lock_path,
+            lock_type,
+            lock_uuid,
+            created_at,
+            create_missing=create_missing,
+        )
+
+
 class NFSCacheLockingTests(unittest.TestCase):
     def test_lock_metadata_is_written_for_reader_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,6 +92,31 @@ class NFSCacheLockingTests(unittest.TestCase):
                 self.assertIn("last_seen", metadata)
             finally:
                 cache._release_read_lock(reader_lease)
+
+    def test_reader_metadata_write_recreates_missing_token_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = MissingInitialReaderMetadataDirCache(
+                Path(tmp) / "cache",
+                poll_seconds=0.005,
+            )
+            lock_path = Path(tmp) / "entry.parquet.lock"
+
+            reader_lease = cache._acquire_read_lock(lock_path)
+            try:
+                self.assertTrue((reader_lease.path / "lock.json").is_file())
+            finally:
+                cache._release_read_lock(reader_lease)
+
+    def test_reader_metadata_write_reraises_non_transient_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = BrokenReaderMetadataCache(
+                Path(tmp) / "cache",
+                poll_seconds=0.005,
+            )
+            lock_path = Path(tmp) / "entry.parquet.lock"
+
+            with self.assertRaises(PermissionError):
+                cache._acquire_read_lock(lock_path)
 
     def test_warm_cache_reads_can_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

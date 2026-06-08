@@ -1,4 +1,5 @@
 import argparse
+import sys
 import oracledb
 import polars as pl
 
@@ -89,6 +90,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     args = parse_args()
     # Go through the cache so the run reports Oracle (miss) vs cache (hit).
     container = read_data_container(args.sql)

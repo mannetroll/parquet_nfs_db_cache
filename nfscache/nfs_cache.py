@@ -324,9 +324,15 @@ class NFSCache:
                 raise
 
             try:
-                reader_lease = self._start_lock_heartbeat(reader_path, "reader")
-            except OSError:
+                reader_lease = self._start_lock_heartbeat(
+                    reader_path,
+                    "reader",
+                    create_missing=True,
+                )
+            except OSError as exc:
                 self._remove_lock_dir(reader_path)
+                if not self._is_transient_lock_mkdir_error(exc):
+                    raise
                 time.sleep(self.poll_seconds)
                 continue
 
@@ -452,13 +458,25 @@ class NFSCache:
 
     @staticmethod
     def _reader_lock_name() -> str:
-        hostname = socket.gethostname().replace("/", "_")
-        return f"{hostname}.{os.getpid()}.{uuid.uuid4().hex}.reader"
+        hostname = socket.gethostname().replace("/", "_")[:16]
+        return f"r.{hostname}.{os.getpid()}.{uuid.uuid4().hex[:16]}"
 
-    def _start_lock_heartbeat(self, lock_path: Path, lock_type: str) -> _LockLease:
+    def _start_lock_heartbeat(
+        self,
+        lock_path: Path,
+        lock_type: str,
+        *,
+        create_missing: bool = False,
+    ) -> _LockLease:
         lock_uuid = uuid.uuid4().hex
         created_at = self._utc_now()
-        self._write_lock_metadata(lock_path, lock_type, lock_uuid, created_at)
+        self._write_lock_metadata(
+            lock_path,
+            lock_type,
+            lock_uuid,
+            created_at,
+            create_missing=create_missing,
+        )
         stop_event = threading.Event()
         thread = threading.Thread(
             target=self._heartbeat_lock,
@@ -490,10 +508,15 @@ class NFSCache:
         lock_type: str,
         lock_uuid: str,
         created_at: str,
+        *,
+        create_missing: bool = False,
     ) -> None:
+        if create_missing:
+            lock_path.mkdir(parents=True, exist_ok=True)
+
         metadata_path = lock_path / "lock.json"
         part_path = metadata_path.with_name(
-            f"{metadata_path.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
+            f"l.{os.getpid()}.{uuid.uuid4().hex[:16]}.tmp"
         )
         metadata = {
             "metadata_version": LOCK_METADATA_VERSION,
@@ -690,8 +713,8 @@ class NFSCache:
         source_sql: str | None,
     ) -> None:
         try:
-            parquet_file = pq.ParquetFile(str(part_path))
-            schema = parquet_file.schema_arrow
+            parquet_metadata = pq.read_metadata(str(part_path))
+            schema = pq.read_schema(str(part_path))
             self._write_metadata(
                 meta_part_path,
                 display_key=display_key,
@@ -699,7 +722,7 @@ class NFSCache:
                 parquet_path=part_path,
                 source_version=source_version,
                 source_sql=source_sql,
-                row_count=parquet_file.metadata.num_rows,
+                row_count=parquet_metadata.num_rows,
                 column_count=len(schema),
                 schema=schema,
             )
