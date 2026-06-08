@@ -10,14 +10,14 @@ file. Warm loads use `polars.read_parquet`.
 ## Install
 
 ```bash
-pip install nfscache
+uv add nfscache
 ```
 
 The Oracle SQL source path requires the `oracledb` driver, available as the
 `oracle` extra:
 
 ```bash
-pip install nfscache[oracle]
+uv add nfscache[oracle]
 ```
 
 ## Usage
@@ -27,7 +27,7 @@ your cold-load function with a decorator. The wrapped function only runs on a
 cache miss; warm hits are served from the Parquet cache.
 
 The example below uses the Oracle SQL source path, so it needs the `oracle`
-extra (`pip install nfscache[oracle]`). For a file-backed source that works with
+extra (`uv add nfscache[oracle]`). For a file-backed source that works with
 the base install, use `@nfscache.parquet` (see
 `nfscache/util/main.py`).
 
@@ -252,6 +252,13 @@ uv run --no-cache --no-sync python -m nfscache.util.generate_parquets --seed 123
 ```
 
 ## Oracle SQL Cache
+
+The Oracle demos run from a source checkout and need the `oracledb` driver. Sync
+the `oracle` extra into the environment first:
+
+```bash
+uv sync --extra oracle
+```
 
 Start the local Oracle demo container:
 
