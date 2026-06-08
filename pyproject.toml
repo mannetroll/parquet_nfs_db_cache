@@ -36,14 +36,20 @@ oracle = [
     "oracledb>=3.4.2,<4",
 ]
 
-[project.scripts]
-nfscache-demo = "nfscache.util.main:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["nfscache"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["CLAUDE.md", "AGENTS.md", "parquet_backed_disk_cache.txt"]
+exclude = [
+    "CLAUDE.md",
+    "AGENTS.md",
+    "Dockerfile",
+    "build_and_run.sh",
+    "uv.lock",
+    "init/",
+    "tests/",
+    "parquet_backed_disk_cache.txt",
+]
 
 [dependency-groups]
 dev = [
