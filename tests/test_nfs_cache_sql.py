@@ -83,6 +83,7 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
         self.assertEqual(key_a, key_b)
         self.assertTrue(key_a.startswith("sql/ORDERS/"))
         self.assertTrue(key_a.endswith(".parquet"))
+        self.assertEqual(len(Path(key_a).stem), 16)
 
     def test_display_key_varies_with_sql_and_return_cols(self) -> None:
         cache = NFSCache(Path("unused"))

@@ -22,6 +22,7 @@ from nfscache.data.data_container import DataContainer
 CACHE_METADATA_VERSION = 1
 CACHE_WRITER_VERSION = "nfscache.v1"
 LOCK_METADATA_VERSION = 1
+SQL_CACHE_FINGERPRINT_HEX_LENGTH = 16
 
 
 class _LockLease:
@@ -890,7 +891,7 @@ class NFSCache:
         table_name = (self._table_from_sql(normalized_sql) or "NO_TABLE").upper()
         fingerprint = hashlib.sha256(
             f"{normalized_sql}|{cols_key}".encode("utf-8")
-        ).hexdigest()
+        ).hexdigest()[:SQL_CACHE_FINGERPRINT_HEX_LENGTH]
         return f"sql/{table_name}/{fingerprint}.parquet"
 
     def _sql_source_version(self, sql: str) -> str | None:
