@@ -127,14 +127,14 @@ class NFSCache:
             kwargs_dict = dict(kwargs)
             sql = self._sql_arg(signature, args_tuple, kwargs_dict)
             output_path = Path(
-                self._filename_arg(signature, args_tuple, kwargs_dict)
+                self._path_arg(signature, args_tuple, kwargs_dict)
             )
             normalized_sql = self._normalize_sql(str(sql))
             return_cols = kwargs_dict.get("return_cols")
             display_key = self._sql_display_key(normalized_sql, return_cols)
 
             def write_part(part_path: Path) -> None:
-                part_args, part_kwargs = self._replace_filename_arg(
+                part_args, part_kwargs = self._replace_path_arg(
                     signature,
                     args_tuple,
                     kwargs_dict,
@@ -751,14 +751,21 @@ class NFSCache:
     def _normalize_sql(sql: str) -> str:
         return " ".join(sql.split()).strip().rstrip(";")
 
+    # Parameter names the SQL/path arguments may appear under. The decorated
+    # function's signature is matched against these so call sites can name the
+    # arguments naturally (e.g. `sql_query`, `parquet_path`).
+    _SQL_ARG_NAMES = ("sql", "sql_query", "query")
+    _PATH_ARG_NAMES = ("filename", "parquet_path", "output_path", "output", "path")
+
     @staticmethod
     def _sql_arg(
         signature: inspect.Signature,
         args: tuple[object, ...],
         kwargs: Mapping[str, object],
     ) -> object:
-        if "sql" in kwargs:
-            return kwargs["sql"]
+        for name in NFSCache._SQL_ARG_NAMES:
+            if name in kwargs:
+                return kwargs[name]
 
         try:
             bound = signature.bind_partial(*args, **kwargs)
@@ -767,13 +774,42 @@ class NFSCache:
                 return args[0]
             raise
 
-        if "sql" in bound.arguments:
-            return bound.arguments["sql"]
+        for name in NFSCache._SQL_ARG_NAMES:
+            if name in bound.arguments:
+                return bound.arguments[name]
 
         if args:
             return args[0]
 
         raise TypeError("sql requires a sql argument")
+
+    @staticmethod
+    def _path_arg(
+        signature: inspect.Signature,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> object:
+        bound = signature.bind_partial(*args, **kwargs)
+        for name in NFSCache._PATH_ARG_NAMES:
+            if name in bound.arguments:
+                return bound.arguments[name]
+
+        raise TypeError("sql_parquet requires an output path argument")
+
+    @staticmethod
+    def _replace_path_arg(
+        signature: inspect.Signature,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+        path: Path,
+    ) -> tuple[tuple[object, ...], dict[str, object]]:
+        bound = signature.bind_partial(*args, **kwargs)
+        for name in NFSCache._PATH_ARG_NAMES:
+            if name in bound.arguments:
+                bound.arguments[name] = path
+                return bound.args, bound.kwargs
+
+        raise TypeError("sql_parquet requires an output path argument")
 
     def _table_from_sql(self, sql: str) -> str | None:
         match = self._FROM_RE.search(sql)

@@ -210,18 +210,18 @@ def _rows_to_table(rows: list[tuple[Any, ...]], schema: pa.Schema) -> pa.Table:
 
 @nfscache.sql_parquet
 def stream_data_to_parquet(
-    sql: str,
-    filename: Path,
+    sql_query: str,
+    parquet_path: str | os.PathLike,
     connection: oracledb.Connection,
-):
+) -> tuple[int, int]:
     """Stream an Oracle result set to one Parquet file.
 
     Returns `(row_count, column_count)`.
     """
-    filename = Path(filename)
-    filename.parent.mkdir(parents=True, exist_ok=True)
-    part_path = filename.with_name(
-        f"{filename.name}.{os.getpid()}.{uuid4().hex}.part"
+    output_path = Path(parquet_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = output_path.with_name(
+        f"{output_path.name}.{os.getpid()}.{uuid4().hex}.part"
     )
 
     row_count = 0
@@ -230,7 +230,7 @@ def stream_data_to_parquet(
     try:
         with connection.cursor() as cursor:
             cursor.arraysize = DEFAULT_BATCH_SIZE
-            cursor.execute(sql)
+            cursor.execute(sql_query)
 
             if cursor.description is None:
                 raise ValueError("SQL did not return a result set")
@@ -258,7 +258,7 @@ def stream_data_to_parquet(
         if writer is not None:
             writer.close()
             writer = None
-        os.replace(part_path, filename)
+        os.replace(part_path, output_path)
     except Exception:
         if writer is not None:
             try:
@@ -293,13 +293,13 @@ def main() -> int:
     nfscache.connect_factory = lambda: connect(args)
 
     with connect(args) as connection:
-        stream_data_to_parquet(
-            args.sql,
-            args.output,
-            connection,
+        output_path = stream_data_to_parquet(
+            sql_query=args.sql,
+            parquet_path=args.output,
+            connection=connection,
         )
 
-    print(f"Wrote {args.output}")
+    print(f"Wrote {output_path}")
     return 0
 
 
