@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A prototype shared-filesystem cache for Parquet data. A cold load streams results from any
 slow source (Oracle, etc.) straight into a Parquet cache file; a warm load returns the
-validated cache file. The cache reads and writes Parquet with PyArrow and has **no DataFrame
-dependency** (no Polars, no `DataContainer`). The design target is an Oracle-on-NFS deployment
+validated cache file. The cache reads and writes Parquet with PyArrow.
+The design target is an Oracle-on-NFS deployment
 with many concurrent clients, so most of the complexity is about making concurrent writes and
 cache invalidation safe over a shared filesystem (NFS, and now SMB/Windows shares).
 

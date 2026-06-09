@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Python 3.13 prototype for a shared-filesystem (NFS / SMB) Parquet cache. It reads and writes Parquet with PyArrow and has no DataFrame dependency (no Polars, no `DataContainer`). Core cache logic lives in `nfscache/nfs_cache.py`, including authoritative metadata, read/write locking, heartbeats, and stale-lock recovery. Parquet generation and the concurrency swarm live in `nfscache/util/`. Oracle load/read/stream CLIs and the connection pool live in `nfscache/database/`. The main entry points are `nfscache.util.swarm_stream` for Oracle SQL streaming-cache concurrency checks and `nfscache.util.generate_parquets` for test data. Docker/Oracle bootstrap files are `Dockerfile`, `build_and_run.sh`, and `init/001_create_user_and_privs.sql`. Generated runtime data belongs in `parquet/` and `__cache__/`.
+This is a Python 3.13 prototype for a shared-filesystem (NFS / SMB) Parquet cache. It reads and writes Parquet directly with PyArrow. Core cache logic lives in `nfscache/nfs_cache.py`, including authoritative metadata, read/write locking, heartbeats, and stale-lock recovery. Parquet generation and the concurrency swarm live in `nfscache/util/`. Oracle load/read/stream CLIs and the connection pool live in `nfscache/database/`. The main entry points are `nfscache.util.swarm_stream` for Oracle SQL streaming-cache concurrency checks and `nfscache.util.generate_parquets` for test data. Docker/Oracle bootstrap files are `Dockerfile`, `build_and_run.sh`, and `init/001_create_user_and_privs.sql`. Generated runtime data belongs in `parquet/` and `__cache__/`.
 
 ## Build, Test, and Development Commands
 
