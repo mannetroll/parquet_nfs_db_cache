@@ -816,9 +816,6 @@ class NFSCache:
         if source_version is None:
             return ""
 
-        if source_version.startswith("sha256:"):
-            return f" sha={source_version.removeprefix('sha256:')[:40]}"
-
         return f" version={source_version[:40]}"
 
     def _cache_path(self, display_key: str) -> Path:
