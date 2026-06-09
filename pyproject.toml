@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nfscache"
 version = "0.1.2"
-description = "Concurrency-safe, NFS-friendly Parquet cache for Polars DataFrames"
+description = "Concurrency-safe, NFS-friendly Parquet cache for Databases"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
