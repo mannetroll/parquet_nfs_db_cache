@@ -10,12 +10,12 @@ import oracledb
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from nfscache.database.oracle_arrow import rows_to_table
+from nfscache.database.oracle_arrow import schema_from_description
 from nfscache.database.oracle_env import apply_dotenv
 from nfscache.database.oracle_pool import make_pool_factory
 from nfscache.database.oracle_streaming import DEFAULT_BATCH_SIZE
 from nfscache.database.oracle_streaming import DEFAULT_COMPRESSION
-from nfscache.database.oracle_streaming import _rows_to_table
-from nfscache.database.oracle_streaming import _schema_from_description
 from nfscache.nfs_cache import NFSCache
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
@@ -158,7 +158,7 @@ def _stream_to_parquet(
             if cursor.description is None:
                 raise ValueError("SQL did not return a result set")
 
-            schema = _schema_from_description(cursor.description)
+            schema = schema_from_description(cursor.description)
             writer = pq.ParquetWriter(
                 str(part_path), schema, compression=DEFAULT_COMPRESSION
             )
@@ -166,12 +166,12 @@ def _stream_to_parquet(
                 rows = cursor.fetchmany(batch_size)
                 if not rows:
                     break
-                table = _rows_to_table(rows, schema)
+                table = rows_to_table(rows, schema)
                 writer.write_table(table)
                 row_count += table.num_rows
 
             if row_count == 0:
-                writer.write_table(_rows_to_table([], schema))
+                writer.write_table(rows_to_table([], schema))
 
         writer.close()
         writer = None
