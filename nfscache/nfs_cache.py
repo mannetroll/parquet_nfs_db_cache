@@ -576,7 +576,8 @@ class NFSCache:
             encoding="utf-8",
         )
 
-    def _file_hash(self, path: Path) -> str:
+    @staticmethod
+    def _file_hash(path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as file:
             for chunk in iter(lambda: file.read(8 * 1024 * 1024), b""):
@@ -831,7 +832,8 @@ class NFSCache:
 
         return self.cache_dir.joinpath(*key_path.parts)
 
-    def _part_path(self, path: Path) -> Path:
+    @staticmethod
+    def _part_path(path: Path) -> Path:
         return path.with_name(
             f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
         )
