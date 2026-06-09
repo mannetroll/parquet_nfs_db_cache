@@ -6,7 +6,7 @@ and `mkdir` retry paths tolerate the racier removal semantics of SMB).
 
 A cold load streams results from any slow source (for example Oracle) straight
 into a Parquet cache file; a warm load returns the validated cache file. The
-cache reads and writes Parquet with PyArrow and has no DataFrame dependency.
+cache reads and writes Parquet directly with PyArrow.
 
 ## Install
 
@@ -241,4 +241,3 @@ clients, the next important pieces are:
 - add operational controls for cache retention, quotas, old `*.part` cleanup,
   version migration, compression, permissions, and bad-key runbooks
 ```
-
