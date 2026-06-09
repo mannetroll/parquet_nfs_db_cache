@@ -4,9 +4,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import polars as pl
 
-from nfscache.data.data_container import DataContainer
 from nfscache.nfs_cache import NFSCache
 
 
@@ -120,98 +118,90 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
         )
 
 
+def make_stream(cache: NFSCache, counter: list[int]):
+    """A @sql_parquet load that writes a one-row Parquet stamped with the
+    cold-load count, so warm hits (no reload) are observable in the output."""
+
+    @cache.sql_parquet
+    def stream(sql: str, parquet_path: Path, connection: object) -> None:
+        counter[0] += 1
+        pq.write_table(pa.table({"value": [counter[0]]}), parquet_path)
+
+    return stream
+
+
 class NFSCacheSqlFlowTests(unittest.TestCase):
     def test_warm_hit_skips_reload_when_version_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = NFSCache(
-                Path(tmp) / "cache",
+                tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
-            calls = 0
+            counter = [0]
+            stream = make_stream(cache, counter)
 
-            @cache.sql
-            def load(sql: str) -> DataContainer:
-                nonlocal calls
-                calls += 1
-                df = pl.DataFrame({"value": [calls]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+            first = stream("select * from T", tmp_path / "a.parquet", object())
+            second = stream("select * from T", tmp_path / "b.parquet", object())
 
-            first = load("select * from T")
-            second = load("select * from T")
-
-            self.assertEqual(calls, 1)
-            self.assertEqual(first.data.rows_data_pl["value"].to_list(), [1])
-            self.assertEqual(second.data.rows_data_pl["value"].to_list(), [1])
+            self.assertEqual(counter[0], 1)
+            self.assertEqual(pq.read_table(first).to_pydict(), {"value": [1]})
+            self.assertEqual(pq.read_table(second).to_pydict(), {"value": [1]})
 
     def test_scn_change_invalidates_and_reloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = NFSCache(
-                Path(tmp) / "cache",
+                tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
-            calls = 0
+            counter = [0]
+            stream = make_stream(cache, counter)
 
-            @cache.sql
-            def load(sql: str) -> DataContainer:
-                nonlocal calls
-                calls += 1
-                df = pl.DataFrame({"value": [calls]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
-
-            load("select * from T")
+            stream("select * from T", tmp_path / "a.parquet", object())
             oracle.scn = 200  # table changed -> version token advances
 
-            data = load("select * from T")
+            out = stream("select * from T", tmp_path / "b.parquet", object())
 
-            self.assertEqual(calls, 2)
-            self.assertEqual(data.data.rows_data_pl["value"].to_list(), [2])
+            self.assertEqual(counter[0], 2)
+            self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
 
     def test_row_count_change_invalidates_even_if_scn_static(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = NFSCache(
-                Path(tmp) / "cache",
+                tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
-            calls = 0
+            counter = [0]
+            stream = make_stream(cache, counter)
 
-            @cache.sql
-            def load(sql: str) -> DataContainer:
-                nonlocal calls
-                calls += 1
-                df = pl.DataFrame({"value": [calls]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
-
-            load("select * from T")
+            stream("select * from T", tmp_path / "a.parquet", object())
             oracle.n_rows = 5  # SCN unchanged; row-count guard must still invalidate
 
-            load("select * from T")
+            stream("select * from T", tmp_path / "b.parquet", object())
 
-            self.assertEqual(calls, 2)
+            self.assertEqual(counter[0], 2)
 
     def test_distinct_sql_use_distinct_cache_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = NFSCache(
-                Path(tmp) / "cache",
+                tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
-            calls = 0
+            counter = [0]
+            stream = make_stream(cache, counter)
 
-            @cache.sql
-            def load(sql: str) -> DataContainer:
-                nonlocal calls
-                calls += 1
-                df = pl.DataFrame({"value": [calls]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+            stream("select * from T", tmp_path / "a.parquet", object())
+            stream("select id from T", tmp_path / "b.parquet", object())
+            stream("select * from T", tmp_path / "c.parquet", object())  # warm hit
 
-            load("select * from T")
-            load("select id from T")
-            load("select * from T")  # warm hit on the first entry
-
-            self.assertEqual(calls, 2)
+            self.assertEqual(counter[0], 2)
 
     def test_sql_parquet_streams_to_cache_and_exports_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -221,14 +211,8 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
-            calls = 0
-
-            @cache.sql_parquet
-            def stream(sql: str, filename: Path, connection: object) -> None:
-                nonlocal calls
-                calls += 1
-                table = pa.table({"value": [calls]})
-                pq.write_table(table, filename)
+            counter = [0]
+            stream = make_stream(cache, counter)
 
             output_a = tmp_path / "out" / "a.parquet"
             output_b = tmp_path / "out" / "b.parquet"
@@ -237,15 +221,9 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
             stream("select * from T", output_b, object())
 
             self.assertEqual(returned, output_a)
-            self.assertEqual(calls, 1)
-            self.assertEqual(
-                pq.read_table(output_a).to_pydict(),
-                {"value": [1]},
-            )
-            self.assertEqual(
-                pq.read_table(output_b).to_pydict(),
-                {"value": [1]},
-            )
+            self.assertEqual(counter[0], 1)
+            self.assertEqual(pq.read_table(output_a).to_pydict(), {"value": [1]})
+            self.assertEqual(pq.read_table(output_b).to_pydict(), {"value": [1]})
             self.assertEqual(list(output_a.parent.glob("*.part")), [])
             self.assertEqual(len(list((tmp_path / "cache").rglob("*.parquet"))), 1)
             self.assertEqual(len(list((tmp_path / "cache").rglob("*.meta.json"))), 1)
@@ -258,24 +236,15 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
-            calls = 0
-
-            @cache.sql_parquet
-            def stream(sql: str, filename: Path, connection: object) -> None:
-                nonlocal calls
-                calls += 1
-                table = pa.table({"value": [calls]})
-                pq.write_table(table, filename)
+            counter = [0]
+            stream = make_stream(cache, counter)
 
             stream("select * from T", tmp_path / "first.parquet", object())
             oracle.scn = 200
-            stream("select * from T", tmp_path / "second.parquet", object())
+            out = stream("select * from T", tmp_path / "second.parquet", object())
 
-            self.assertEqual(calls, 2)
-            self.assertEqual(
-                pq.read_table(tmp_path / "second.parquet").to_pydict(),
-                {"value": [2]},
-            )
+            self.assertEqual(counter[0], 2)
+            self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
 
 
 if __name__ == "__main__":

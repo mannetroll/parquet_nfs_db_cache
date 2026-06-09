@@ -3,30 +3,73 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from nfscache.data.data_container import DataContainer
 from nfscache.nfs_cache import NFSCache
+
+
+class FakeCursor:
+    """Minimal cursor honoring the VERSION_SQL contract used by the cache."""
+
+    def __init__(self, source: "FakeOracle") -> None:
+        self._source = source
+
+    def __enter__(self) -> "FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, sql: str) -> None:
+        return None
+
+    def fetchone(self) -> tuple[int, int | None]:
+        return (self._source.n_rows, self._source.scn)
+
+
+class FakeConnection:
+    def __init__(self, source: "FakeOracle") -> None:
+        self._source = source
+
+    def __enter__(self) -> "FakeConnection":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def cursor(self) -> FakeCursor:
+        return FakeCursor(self._source)
+
+
+class FakeOracle:
+    """Mutable stand-in for Oracle so tests drive the version token directly."""
+
+    def __init__(self, *, n_rows: int = 2, scn: int | None = 100) -> None:
+        self.n_rows = n_rows
+        self.scn = scn
+
+    def connect_factory(self) -> FakeConnection:
+        return FakeConnection(self)
 
 
 class NFSCacheMetadataTests(unittest.TestCase):
     def test_metadata_contains_authoritative_fields_and_warms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "source.txt"
-            source_path.write_text("v1", encoding="utf-8")
-            cache = NFSCache(tmp_path / "cache")
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
-            @cache.parquet
-            def load(filename: Path) -> DataContainer:
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 nonlocal calls
                 calls += 1
-                df = pl.DataFrame({"id": [1, 2], "name": ["a", "b"]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+                table = pa.table({"id": [1, 2], "name": ["a", "b"]})
+                pq.write_table(table, parquet_path)
 
-            load(source_path)
-            load(source_path)
+            stream("select * from DEMO", tmp_path / "a.parquet", object())
+            stream("select * from DEMO", tmp_path / "b.parquet", object())
 
             self.assertEqual(calls, 1)
             metadata_text = self._only_metadata_path(tmp_path / "cache").read_text(
@@ -37,8 +80,9 @@ class NFSCacheMetadataTests(unittest.TestCase):
             metadata = self._read_only_metadata(tmp_path / "cache")
 
             self.assertEqual(metadata["metadata_version"], 1)
-            self.assertEqual(metadata["source_key"], str(source_path))
-            self.assertTrue(str(metadata["source_version"]).startswith("sha256:"))
+            self.assertTrue(str(metadata["source_key"]).startswith("sql/DEMO/"))
+            self.assertEqual(metadata["source_version"], "DEMO@SCN:100|ROWS:2")
+            self.assertEqual(metadata["source_sql"], "select * from DEMO")
             data_metadata = metadata["data"]
             parquet_metadata = metadata["parquet"]
             self.assertEqual(data_metadata["row_count"], 2)
@@ -52,97 +96,90 @@ class NFSCacheMetadataTests(unittest.TestCase):
     def test_corrupt_metadata_reloads_and_rewrites(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "source.txt"
-            source_path.write_text("v1", encoding="utf-8")
-            cache = NFSCache(tmp_path / "cache")
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
-            @cache.parquet
-            def load(filename: Path) -> DataContainer:
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 nonlocal calls
                 calls += 1
-                df = pl.DataFrame({"value": [calls]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+                pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
-            load(source_path)
+            stream("select * from T", tmp_path / "a.parquet", object())
             meta_path = self._only_metadata_path(tmp_path / "cache")
             meta_path.write_text("{not-json", encoding="utf-8")
 
-            data = load(source_path)
-            df = data.data.rows_data_pl
+            out = stream("select * from T", tmp_path / "b.parquet", object())
 
             self.assertEqual(calls, 2)
-            self.assertEqual(df["value"].to_list(), [2])
+            self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
             data_metadata = self._read_only_metadata(tmp_path / "cache")["data"]
             self.assertEqual(data_metadata["row_count"], 1)
 
     def test_corrupt_parquet_reloads_and_rewrites(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "source.txt"
-            source_path.write_text("v1", encoding="utf-8")
-            cache = NFSCache(tmp_path / "cache")
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
-            @cache.parquet
-            def load(filename: Path) -> DataContainer:
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 nonlocal calls
                 calls += 1
-                df = pl.DataFrame({"value": [calls]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+                pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
-            load(source_path)
+            stream("select * from T", tmp_path / "a.parquet", object())
             meta_path = self._only_metadata_path(tmp_path / "cache")
             parquet_path = meta_path.with_name(
                 meta_path.name.removesuffix(".meta.json")
             )
             parquet_path.write_bytes(b"not parquet")
 
-            data = load(source_path)
-            df = data.data.rows_data_pl
+            out = stream("select * from T", tmp_path / "b.parquet", object())
 
             self.assertEqual(calls, 2)
-            self.assertEqual(df["value"].to_list(), [2])
+            self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
 
-    def test_parquet_cache_uses_filename_arg_on_method(self) -> None:
+    def test_sql_parquet_cache_uses_path_arg_on_method(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "source.txt"
-            source_path.write_text("v1", encoding="utf-8")
-            cache = NFSCache(tmp_path / "cache")
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
             class Loader:
-                @cache.parquet
-                def load(self, filename: Path) -> DataContainer:
+                @cache.sql_parquet
+                def stream(
+                    self, sql: str, parquet_path: Path, connection: object
+                ) -> None:
                     nonlocal calls
                     calls += 1
-                    df = pl.DataFrame({"value": [calls]})
-                    return DataContainer({"headers": tuple(df.columns), "data": df})
+                    pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
             loader = Loader()
-            loader.load(source_path)
-            data = loader.load(source_path)
-            df = data.data.rows_data_pl
+            loader.stream("select * from T", tmp_path / "a.parquet", object())
+            out = loader.stream("select * from T", tmp_path / "b.parquet", object())
 
             self.assertEqual(calls, 1)
-            self.assertEqual(df["value"].to_list(), [1])
+            self.assertEqual(pq.read_table(out).to_pydict(), {"value": [1]})
             metadata = self._read_only_metadata(tmp_path / "cache")
-            self.assertEqual(metadata["source_key"], str(source_path))
+            self.assertTrue(str(metadata["source_key"]).startswith("sql/T/"))
 
     def test_sql_cache_metadata_contains_normalized_sql(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cache = NFSCache(tmp_path / "cache")
-            raw_sql = " select  *\nfrom DATA_CONTAINER_DEMO where id = 1; "
-            normalized_sql = "select * from DATA_CONTAINER_DEMO where id = 1"
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            raw_sql = " select  *\nfrom DATA_DEMO where id = 1; "
+            normalized_sql = "select * from DATA_DEMO where id = 1"
 
-            @cache.sql
-            def load(sql: str) -> DataContainer:
-                df = pl.DataFrame({"id": [1]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
+                pq.write_table(pa.table({"id": [1]}), parquet_path)
 
-            load(raw_sql)
+            stream(raw_sql, tmp_path / "a.parquet", object())
             metadata = self._read_only_metadata(tmp_path / "cache")
 
             self.assertEqual(metadata["source_sql"], normalized_sql)

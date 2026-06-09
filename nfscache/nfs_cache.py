@@ -14,10 +14,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-import polars as pl
 import pyarrow.parquet as pq
-
-from nfscache.data.data_container import DataContainer
 
 CACHE_METADATA_VERSION = 1
 CACHE_WRITER_VERSION = "nfscache.v1"
@@ -53,7 +50,6 @@ class NFSCache:
         poll_seconds: float = 0.1,
         stale_lock_seconds: float = 1800.0,
         heartbeat_seconds: float | None = None,
-        source_version: Callable[..., object] | None = None,
         connect_factory: Callable[[], object] | None = None,
     ) -> None:
         self.cache_dir = cache_dir
@@ -66,55 +62,10 @@ class NFSCache:
         if heartbeat_seconds <= 0:
             raise ValueError("heartbeat_seconds must be positive")
         self.heartbeat_seconds = heartbeat_seconds
-        self.source_version = source_version
         # Opaque callable returning a DB connection (anything with a
-        # context-manager `cursor()`); used by `sql` to read the
+        # context-manager `cursor()`); used by `sql_parquet` to read the
         # source version. Kept generic so the cache does not depend on oracledb.
         self.connect_factory = connect_factory
-
-    def parquet[**P](
-        self,
-        func: Callable[P, DataContainer],
-    ) -> Callable[P, DataContainer]:
-        signature = inspect.signature(func)
-
-        @functools.wraps(func)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
-            args_tuple = tuple(args)
-            kwargs_dict = dict(kwargs)
-            filename = self._filename_arg(signature, args_tuple, kwargs_dict)
-            display_key = self._parquet_display_key(filename)
-            return self._run_cached(
-                display_key,
-                lambda: self._source_version(filename, args_tuple, kwargs_dict),
-                lambda: func(*args, **kwargs),
-                source_sql=None,
-            )
-
-        return wrapper
-
-    def sql[**P](
-        self,
-        func: Callable[P, DataContainer],
-    ) -> Callable[P, DataContainer]:
-        signature = inspect.signature(func)
-
-        @functools.wraps(func)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> DataContainer:
-            args_tuple = tuple(args)
-            kwargs_dict = dict(kwargs)
-            sql = self._sql_arg(signature, args_tuple, kwargs_dict)
-            normalized_sql = self._normalize_sql(str(sql))
-            return_cols = kwargs_dict.get("return_cols")
-            display_key = self._sql_display_key(normalized_sql, return_cols)
-            return self._run_cached(
-                display_key,
-                lambda: self._sql_source_version(normalized_sql),
-                lambda: func(*args, **kwargs),
-                source_sql=normalized_sql,
-            )
-
-        return wrapper
 
     def sql_parquet[**P](
         self,
@@ -153,69 +104,6 @@ class NFSCache:
             return output_path
 
         return wrapper
-
-    def _run_cached(
-        self,
-        display_key: str,
-        version_fn: Callable[[], str | None],
-        load_fn: Callable[[], DataContainer],
-        *,
-        source_sql: str | None,
-    ) -> DataContainer:
-        cache_path = self._cache_path(display_key)
-        meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
-        lock_path = cache_path.with_name(f"{cache_path.name}.lock")
-
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        source_version = version_fn()
-        reader_lease = self._acquire_read_lock(lock_path)
-        try:
-            cached = self._read_if_cached(
-                cache_path,
-                meta_path,
-                display_key,
-                source_version,
-                source_sql,
-            )
-            if cached is not None:
-                return cached
-        finally:
-            self._release_read_lock(reader_lease)
-
-        writer_lease = self._acquire_write_lock(lock_path)
-        try:
-            source_version = version_fn()
-            cached = self._read_if_cached(
-                cache_path,
-                meta_path,
-                display_key,
-                source_version,
-                source_sql,
-            )
-            if cached is not None:
-                return cached
-
-            part_path = self._part_path(cache_path)
-            meta_part_path = self._part_path(meta_path)
-            try:
-                data, source_version = self._load_stable(version_fn, load_fn)
-                self._write_data_container(
-                    part_path,
-                    cache_path,
-                    meta_part_path,
-                    meta_path,
-                    display_key,
-                    source_version,
-                    source_sql,
-                    data,
-                )
-                return data
-            except Exception:
-                self._remove_file(part_path)
-                self._remove_file(meta_part_path)
-                raise
-        finally:
-            self._release_write_lock(writer_lease)
 
     def _run_cached_parquet(
         self,
@@ -584,43 +472,6 @@ class NFSCache:
     def _utc_now() -> str:
         return datetime.now(UTC).isoformat()
 
-    def _read_if_cached(
-        self,
-        cache_path: Path,
-        meta_path: Path,
-        display_key: str,
-        source_version: str | None,
-        source_sql: str | None,
-    ) -> DataContainer | None:
-        metadata = self._read_valid_metadata(
-            cache_path,
-            meta_path,
-            display_key,
-            source_version,
-            source_sql,
-        )
-        if metadata is None:
-            return None
-
-        version_preview = self._version_preview(metadata.get("source_version"))
-        print(
-            f"Returning cached object: {display_key}{version_preview}...",
-            flush=True,
-        )
-        try:
-            return self._read_data_container(cache_path)
-        except Exception as exc:
-            print(
-                f"Ignoring corrupt cache entry: {display_key}: "
-                f"parquet read failed: {exc}",
-                flush=True,
-            )
-            return None
-
-    def _read_data_container(self, cache_path: Path) -> DataContainer:
-        df = pl.read_parquet(cache_path)
-        return DataContainer({"headers": tuple(df.columns), "data": df})
-
     def _cached_parquet_path_if_valid(
         self,
         cache_path: Path,
@@ -645,63 +496,6 @@ class NFSCache:
             flush=True,
         )
         return cache_path
-
-    def _load_stable(
-        self,
-        version_fn: Callable[[], str | None],
-        load_fn: Callable[[], DataContainer],
-    ) -> tuple[DataContainer, str | None]:
-        while True:
-            source_version_before = version_fn()
-            data = load_fn()
-            source_version_after = version_fn()
-            if source_version_before == source_version_after:
-                return data, source_version_after
-
-            print("Source changed while reading; retrying cold load...", flush=True)
-
-    def _write_data_container(
-        self,
-        part_path: Path,
-        cache_path: Path,
-        meta_part_path: Path,
-        meta_path: Path,
-        display_key: str,
-        source_version: str | None,
-        source_sql: str | None,
-        data: DataContainer,
-    ) -> None:
-        df = data.data.rows_data_pl
-        if not isinstance(df, pl.DataFrame):
-            raise TypeError(
-                "DataContainer.data.rows_data_pl must be a Polars DataFrame"
-            )
-
-        table = df.to_arrow()
-        try:
-            with pq.ParquetWriter(str(part_path), table.schema) as writer:
-                writer.write_table(table)
-            self._write_metadata(
-                meta_part_path,
-                display_key=display_key,
-                cache_path=cache_path,
-                parquet_path=part_path,
-                source_version=source_version,
-                source_sql=source_sql,
-                row_count=table.num_rows,
-                column_count=table.num_columns,
-                schema=table.schema,
-            )
-            # Commit protocol: metadata is authoritative. A cache entry is not
-            # complete until the final metadata sidecar exists and matches the
-            # final parquet bytes. Crashes before this point leave an entry that
-            # readers reject as incomplete or corrupt and reload.
-            os.replace(part_path, cache_path)
-            os.replace(meta_part_path, meta_path)
-        except Exception:
-            self._remove_file(part_path)
-            self._remove_file(meta_part_path)
-            raise
 
     def _write_parquet_file_entry(
         self,
@@ -781,23 +575,6 @@ class NFSCache:
             json.dumps(metadata, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
-
-    def _source_version(
-        self,
-        filename: object,
-        args: tuple[object, ...],
-        kwargs: Mapping[str, object],
-    ) -> str | None:
-        if self.source_version is not None:
-            version = self.source_version(*args, **kwargs)
-            return None if version is None else str(version)
-
-        if isinstance(filename, (str, os.PathLike)):
-            path = Path(filename)
-            if path.is_file():
-                return f"sha256:{self._file_hash(path)}"
-
-        return None
 
     def _file_hash(self, path: Path) -> str:
         digest = hashlib.sha256()
@@ -1044,10 +821,6 @@ class NFSCache:
 
         return f" version={source_version[:40]}"
 
-    @staticmethod
-    def _parquet_display_key(filename: object) -> str:
-        return os.fspath(filename)
-
     def _cache_path(self, display_key: str) -> Path:
         key_path = Path(display_key)
         if key_path.is_absolute():
@@ -1085,26 +858,6 @@ class NFSCache:
             separators=(",", ":"),
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
-
-    @staticmethod
-    def _filename_arg(
-        signature: inspect.Signature,
-        args: tuple[object, ...],
-        kwargs: Mapping[str, object],
-    ) -> object:
-        bound = signature.bind_partial(*args, **kwargs)
-        return bound.arguments["filename"]
-
-    @staticmethod
-    def _replace_filename_arg(
-        signature: inspect.Signature,
-        args: tuple[object, ...],
-        kwargs: Mapping[str, object],
-        filename: Path,
-    ) -> tuple[tuple[object, ...], dict[str, object]]:
-        bound = signature.bind_partial(*args, **kwargs)
-        bound.arguments["filename"] = filename
-        return bound.args, bound.kwargs
 
     @staticmethod
     def _is_complete(path: Path) -> bool:

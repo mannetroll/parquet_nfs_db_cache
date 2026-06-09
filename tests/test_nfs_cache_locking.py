@@ -8,20 +8,71 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from nfscache.data.data_container import DataContainer
 from nfscache.nfs_cache import NFSCache
 
 
+class FakeCursor:
+    def __init__(self, source: "FakeOracle") -> None:
+        self._source = source
+
+    def __enter__(self) -> "FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, sql: str) -> None:
+        return None
+
+    def fetchone(self) -> tuple[int, int | None]:
+        return (self._source.n_rows, self._source.scn)
+
+
+class FakeConnection:
+    def __init__(self, source: "FakeOracle") -> None:
+        self._source = source
+
+    def __enter__(self) -> "FakeConnection":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def cursor(self) -> FakeCursor:
+        return FakeCursor(self._source)
+
+
+class FakeOracle:
+    """Stable version token so concurrent gets are warm hits, not reloads."""
+
+    def __init__(self, *, n_rows: int = 2, scn: int | None = 100) -> None:
+        self.n_rows = n_rows
+        self.scn = scn
+
+    def connect_factory(self) -> FakeConnection:
+        return FakeConnection(self)
+
+
 class ObservedReadCache(NFSCache):
-    def __init__(self, cache_dir: Path) -> None:
-        super().__init__(cache_dir, poll_seconds=0.005)
+    def __init__(self, cache_dir: Path, connect_factory: Callable[[], object]) -> None:
+        super().__init__(
+            cache_dir,
+            poll_seconds=0.005,
+            connect_factory=connect_factory,
+        )
         self.active_readers = 0
         self.max_active_readers = 0
         self.reader_lock = threading.Lock()
 
-    def _read_data_container(self, cache_path: Path) -> DataContainer:
+    def _cached_parquet_path_if_valid(self, *args: object, **kwargs: object):
+        result = super()._cached_parquet_path_if_valid(*args, **kwargs)
+        if result is None:
+            return None
+        # Warm hit: this runs while the per-key read lock is held, so counting
+        # here proves multiple readers overlap on a warm cache entry.
         with self.reader_lock:
             self.active_readers += 1
             self.max_active_readers = max(
@@ -30,7 +81,7 @@ class ObservedReadCache(NFSCache):
             )
         try:
             time.sleep(0.05)
-            return super()._read_data_container(cache_path)
+            return result
         finally:
             with self.reader_lock:
                 self.active_readers -= 1
@@ -121,22 +172,27 @@ class NFSCacheLockingTests(unittest.TestCase):
     def test_warm_cache_reads_can_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            source_path = tmp_path / "source.txt"
-            source_path.write_text("v1", encoding="utf-8")
-            cache = ObservedReadCache(tmp_path / "cache")
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = ObservedReadCache(tmp_path / "cache", oracle.connect_factory)
             cold_loads = 0
 
-            @cache.parquet
-            def load(filename: Path) -> DataContainer:
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 nonlocal cold_loads
                 cold_loads += 1
-                df = pl.DataFrame({"value": [1, 2, 3]})
-                return DataContainer({"headers": tuple(df.columns), "data": df})
+                pq.write_table(pa.table({"value": [1, 2, 3]}), parquet_path)
 
-            load(source_path)
+            stream("select * from T", tmp_path / "warm.parquet", object())
 
             with ThreadPoolExecutor(max_workers=4) as executor:
-                list(executor.map(lambda _: load(source_path), range(4)))
+                list(
+                    executor.map(
+                        lambda i: stream(
+                            "select * from T", tmp_path / f"out_{i}.parquet", object()
+                        ),
+                        range(4),
+                    )
+                )
 
             self.assertEqual(cold_loads, 1)
             self.assertGreaterEqual(cache.max_active_readers, 2)
