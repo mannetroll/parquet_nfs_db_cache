@@ -3,25 +3,12 @@ import re
 from pathlib import Path
 
 import oracledb
-import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from nfscache.database.oracle_env import apply_dotenv
-from nfscache.data.data_container import DataContainer
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
-
-INTEGER_TYPES = {
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.Int64,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-    pl.UInt64,
-}
-FLOAT_TYPES = {pl.Float32, pl.Float64}
-STRING_TYPES = {pl.String, pl.Categorical, pl.Enum}
 
 
 def oracle_identifier(name: str) -> str:
@@ -34,26 +21,25 @@ def table_name_from_path(path: Path) -> str:
     return oracle_identifier(path.stem)
 
 
-def oracle_type(dtype: pl.DataType) -> str:
-    if dtype in INTEGER_TYPES:
+def oracle_type(dtype: pa.DataType) -> str:
+    if pa.types.is_integer(dtype):
         return "NUMBER(38)"
-    if dtype in FLOAT_TYPES:
+    if pa.types.is_floating(dtype) or pa.types.is_decimal(dtype):
         return "BINARY_DOUBLE"
-    if dtype in STRING_TYPES:
+    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
         return "VARCHAR2(4000)"
-    if dtype == pl.Boolean:
+    if pa.types.is_boolean(dtype):
         return "NUMBER(1)"
-    if dtype == pl.Date:
+    if pa.types.is_date(dtype):
         return "DATE"
-    if dtype == pl.Datetime:
+    if pa.types.is_timestamp(dtype):
         return "TIMESTAMP"
     return "CLOB"
 
 
-def read_data_container(path: Path) -> DataContainer:
+def read_table(path: Path) -> pa.Table:
     print(f"Reading: {path}...")
-    df = pl.read_parquet(path)
-    return DataContainer({"headers": tuple(df.columns), "data": df})
+    return pq.read_table(path)
 
 
 def connect(args: argparse.Namespace) -> oracledb.Connection:
@@ -84,12 +70,12 @@ def drop_table_if_exists(connection: oracledb.Connection, table_name: str) -> No
 def create_table(
     connection: oracledb.Connection,
     table_name: str,
-    df: pl.DataFrame,
+    table: pa.Table,
 ) -> list[str]:
-    columns = [oracle_identifier(column) for column in df.columns]
+    columns = [oracle_identifier(field.name) for field in table.schema]
     definitions = [
-        f"{column} {oracle_type(dtype)}"
-        for column, dtype in zip(columns, df.dtypes, strict=True)
+        f"{column} {oracle_type(field.type)}"
+        for column, field in zip(columns, table.schema, strict=True)
     ]
     ddl = f"create table {table_name} ({', '.join(definitions)})"
     with connection.cursor() as cursor:
@@ -97,18 +83,14 @@ def create_table(
     return columns
 
 
-def insert_data_container(
+def insert_table(
     connection: oracledb.Connection,
     table_name: str,
-    data_container: DataContainer,
+    table: pa.Table,
     *,
     batch_size: int,
 ) -> tuple[int, int]:
-    df = data_container.data.rows_data_pl
-    if not isinstance(df, pl.DataFrame):
-        raise TypeError("DataContainer.data.rows_data_pl must be a Polars DataFrame")
-
-    columns = create_table(connection, table_name, df)
+    columns = create_table(connection, table_name, table)
     placeholders = ", ".join(f":{index}" for index in range(1, len(columns) + 1))
     sql = (
         f"insert into {table_name} ({', '.join(columns)}) "
@@ -117,10 +99,10 @@ def insert_data_container(
 
     inserted = 0
     with connection.cursor() as cursor:
-        for batch in df.iter_slices(n_rows=batch_size):
-            rows = list(batch.iter_rows(named=False))
-            if not rows:
+        for batch in table.to_batches(max_chunksize=batch_size):
+            if batch.num_rows == 0:
                 continue
+            rows = list(zip(*(column.to_pylist() for column in batch.columns)))
             cursor.executemany(sql, rows)
             inserted += len(rows)
     connection.commit()
@@ -129,7 +111,7 @@ def insert_data_container(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read a parquet-backed DataContainer and write it to Oracle."
+        description="Read a parquet file and write it to Oracle."
     )
     parser.add_argument("parquet_path", type=Path)
     parser.add_argument("--host", default="localhost")
@@ -155,25 +137,22 @@ def main() -> int:
         if args.table is not None
         else table_name_from_path(path)
     )
-    data_container = read_data_container(path)
-    df = data_container.data.rows_data_pl
-    if not isinstance(df, pl.DataFrame):
-        raise TypeError("DataContainer.data.rows_data_pl must be a Polars DataFrame")
+    table = read_table(path)
 
-    print(f"DataContainer: rows={df.height} cols={df.width}")
+    print(f"Table: rows={table.num_rows} cols={table.num_columns}")
     with connect(args) as connection:
         before_scn = current_scn(connection)
         print(f"Oracle current_scn before write: {before_scn}")
         drop_table_if_exists(connection, table_name)
-        rows, cols = insert_data_container(
+        rows, cols = insert_table(
             connection,
             table_name,
-            data_container,
+            table,
             batch_size=int(args.batch_size),
         )
         after_scn = current_scn(connection)
 
-    print(f"Wrote DataContainer to {args.user.upper()}.{table_name}: rows={rows} cols={cols}")
+    print(f"Wrote parquet to {args.user.upper()}.{table_name}: rows={rows} cols={cols}")
     print(f"Oracle current_scn after write: {after_scn}")
     return 0
 
