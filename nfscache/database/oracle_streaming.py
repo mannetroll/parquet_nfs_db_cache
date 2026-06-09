@@ -213,10 +213,8 @@ def stream_data_to_parquet(
     sql_query: str,
     parquet_path: str | os.PathLike,
     connection: oracledb.Connection,
-) -> tuple[int, int]:
+):
     """Stream an Oracle result set to one Parquet file.
-
-    Returns `(row_count, column_count)`.
     """
     output_path = Path(parquet_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
