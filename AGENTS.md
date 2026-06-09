@@ -2,35 +2,34 @@
 
 ## Project Structure & Module Organization
 
-This is a Python 3.13 prototype for an NFS-backed Parquet cache around `DataContainer` objects. Core cache logic lives in `nfscache/nfs_cache.py`, including authoritative metadata, read/write locking, heartbeats, and stale-lock recovery. Data wrapper types are in `nfscache/data/`, and parquet generation utilities are in `nfscache/util/`. Oracle demo and load/read CLIs live in `nfscache/database/`. Top-level entry points are `main.py` for the local cache demo, `swarm_file.py` for file-source process-level concurrency checks, and `swarm_sql.py` for Oracle SQL read/write concurrency checks. Docker/Oracle bootstrap files are `Dockerfile`, `build_and_run.sh`, and `init/001_create_user_and_privs.sql`. Generated runtime data belongs in `parquet/` and `__cache__/`.
+This is a Python 3.13 prototype for a shared-filesystem (NFS / SMB) Parquet cache. It reads and writes Parquet with PyArrow and has no DataFrame dependency (no Polars, no `DataContainer`). Core cache logic lives in `nfscache/nfs_cache.py`, including authoritative metadata, read/write locking, heartbeats, and stale-lock recovery. Parquet generation and the concurrency swarm live in `nfscache/util/`. Oracle load/read/stream CLIs and the connection pool live in `nfscache/database/`. The main entry points are `nfscache.util.swarm_stream` for Oracle SQL streaming-cache concurrency checks and `nfscache.util.generate_parquets` for test data. Docker/Oracle bootstrap files are `Dockerfile`, `build_and_run.sh`, and `init/001_create_user_and_privs.sql`. Generated runtime data belongs in `parquet/` and `__cache__/`.
 
 ## Build, Test, and Development Commands
 
 - `uv sync`: install dependencies from `pyproject.toml` and `uv.lock`.
-- `uv run --no-cache --no-sync python -m nfscache.util.main`: clear `__cache__`, then run cold/warm/reload demo.
-- `uv run --no-cache --no-sync python -m nfscache.util.swarm_file`: run the default process-level concurrency exercise.
-- `uv run --no-cache --no-sync python -m nfscache.util.swarm_sql`: run Oracle SQL readers while writer processes rewrite the source table.
+- `uv run --no-cache --no-sync python -m nfscache.util.swarm_stream`: run Oracle SQL streaming-cache readers while a writer process rewrites the source table.
 - `uv run --no-cache --no-sync python -m unittest discover -s tests`: run the focused unit tests.
 - `uv run --no-cache --no-sync python -m compileall -q nfscache tests`: syntax-check modules.
 - `uv run --no-cache --no-sync python -m nfscache.util.generate_parquets --seed 123`: generate reproducible parquet source data.
 - `./build_and_run.sh [--wipe]`: build and start the local Oracle container on port `1521`.
-- `uv run --no-cache --no-sync python -m nfscache.database.oracle_write_container`: populate Oracle with generated data.
-- `uv run --no-cache --no-sync python -m nfscache.database.oracle_read "<SQL>"`: read Oracle data through the SQL cache.
+- `uv run --no-cache --no-sync python -m nfscache.database.oracle_write parquet/A_TEST_1048576.parquet`: load a parquet file into Oracle.
+- `uv run --no-cache --no-sync python -m nfscache.database.oracle_streaming "<SQL>" out.parquet`: stream Oracle SQL through the Parquet cache.
+- `uv run --no-cache --no-sync python -m nfscache.database.oracle_read "<SQL>"`: standalone Oracle read into a PyArrow table (no cache).
 
 When running `uv` inside restricted agent sandboxes, prefer `uv run --no-cache --no-sync ...` if normal cache access fails.
 
 ## Coding Style & Naming Conventions
 
-Use standard Python style with 4-space indentation, descriptive snake_case names, and small functions that keep cache, data model, and Oracle concerns separated. Preserve the decorator API (`@nfscache.parquet`, `@nfscache.sql`) and the `DataContainer.data.rows_data_pl` contract. Keep lock changes conservative: reader tokens and writer intent are directory locks with `lock.json` heartbeat metadata. No formatter or linter is configured; keep imports tidy and avoid unrelated rewrites.
+Use standard Python style with 4-space indentation, descriptive snake_case names, and small functions that keep cache, data-generation, and Oracle concerns separated. Preserve the decorator API (`@nfscache.sql_parquet`) and its contract: the wrapped function writes a Parquet file to the supplied `parquet_path`/`output_path`, and the cache reads/writes Parquet with PyArrow only. Keep lock changes conservative: reader tokens and writer intent are directory locks with `lock.json` heartbeat metadata. No formatter or linter is configured; keep imports tidy and avoid unrelated rewrites.
 
 ## Testing Guidelines
 
-Focused `unittest` coverage lives in `tests/`, including metadata integrity, corrupted cache recovery, normalized SQL metadata, overlapping warm readers, writer preference, heartbeat freshness, and stale-lock recovery. Treat `main.py` as the local smoke test, `swarm_file.py` as the file-source process-level check, and `swarm_sql.py` as the Oracle SQL process-level check for invalidation and concurrent clients. For Oracle changes, run the Docker bootstrap plus the relevant `nfscache.database.oracle_*` CLI. Name future tests by behavior, for example `test_cache_invalidates_on_source_hash_change`.
+Focused `unittest` coverage lives in `tests/`, including metadata integrity, corrupted cache recovery, normalized SQL metadata, SQL version invalidation, overlapping warm readers, writer preference, heartbeat freshness, and stale-lock recovery, plus the Oracle pool/streaming helpers. Treat `swarm_stream.py` as the Oracle SQL process-level check for invalidation and concurrent clients (note: its `ProcessPoolExecutor` cannot run inside restricted sandboxes). For Oracle changes, run the Docker bootstrap plus the relevant `nfscache.database.oracle_*` CLI. Name future tests by behavior, for example `test_cache_invalidates_on_source_scn_change`.
 
 ## Commit & Pull Request Guidelines
 
-Recent commits are short and scope-focused, often naming the touched feature, such as `normalized_sql`, `oracle_read`, or `@nfscache.sql`. Keep commits similarly concise. Pull requests should describe the cache behavior changed, list commands run, mention Oracle/NFS assumptions, and call out generated artifacts or local-only files that should not be committed.
+Recent commits are short and scope-focused, often naming the touched feature, such as `normalized_sql`, `oracle_read`, or `sql_query`. Keep commits similarly concise. Pull requests should describe the cache behavior changed, list commands run, mention Oracle/NFS/SMB assumptions, and call out generated artifacts or local-only files that should not be committed.
 
 ## Security & Configuration Tips
 
-Oracle defaults are development-only (`SOMEUSER`/`cache`, local `FREEPDB1`). Keep `.env`, generated parquet data, cache directories, and logs out of commits. Validate `mkdir` lock tokens, stale-lock recovery, and `os.replace` on the target NFS mount before treating this as production-safe.
+Oracle defaults are development-only (`SOMEUSER`/`cache`, local `FREEPDB1`). Keep `.env`, generated parquet data, cache directories, and logs out of commits. Validate `mkdir` lock tokens, stale-lock recovery, and `os.replace` on the target NFS or SMB mount before treating this as production-safe.

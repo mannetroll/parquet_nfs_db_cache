@@ -4,41 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A prototype NFS-backed cache for `DataContainer` objects whose payload is a Polars
-`DataFrame`. Cold loads read from any slow source (Oracle, a local parquet file, etc.);
-warm loads read a Parquet cache file with `polars.read_parquet`. The design target is an
-Oracle-on-NFS deployment with many concurrent clients, so most of the complexity is about
-making concurrent writes and cache invalidation safe over a shared filesystem.
+A prototype shared-filesystem cache for Parquet data. A cold load streams results from any
+slow source (Oracle, etc.) straight into a Parquet cache file; a warm load returns the
+validated cache file. The cache reads and writes Parquet with PyArrow and has **no DataFrame
+dependency** (no Polars, no `DataContainer`). The design target is an Oracle-on-NFS deployment
+with many concurrent clients, so most of the complexity is about making concurrent writes and
+cache invalidation safe over a shared filesystem (NFS, and now SMB/Windows shares).
 
 ## Commands
 
 This project uses `uv` (Python 3.13). Dependencies live in `pyproject.toml` / `uv.lock`.
+Runtime deps are `numpy` and `pyarrow`; Oracle is an optional extra (`oracledb`).
 
 ```bash
 uv sync
-uv run --no-cache --no-sync python -m nfscache.util.main
-uv run --no-cache --no-sync python -m nfscache.util.swarm_file
-uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
+uv run --no-cache --no-sync python -m nfscache.util.swarm_stream
 uv run --no-cache --no-sync python -m unittest discover -s tests
 uv run --no-cache --no-sync python -m compileall -q nfscache tests
 uv run --no-cache --no-sync python -m nfscache.util.generate_parquets [--seed N]
 ```
 
-`main.py` demonstrates cold load, warm hit, source regeneration, reload, and warm hit.
-`swarm_file.py` takes flags to size the run (`--clients`, `--generators`, `--gets-per-client`,
-`--generations`, `--n-rows`, `--cols`, `--data-dir`, `--cache-dir`); see README for a small example.
-`swarm_sql.py` takes similar sizing flags (`--clients`, `--writers`, `--gets-per-client`,
-`--generations`, `--n-rows`, `--batch-size`, `--table`, `--cache-dir`) and requires Oracle.
+`swarm_stream.py` takes flags to size the run (`--clients`, `--writers`, `--gets-per-client`,
+`--generations`, `--n-rows`, `--batch-size`, `--table`, `--out-dir`, `--cache-dir`) and requires
+Oracle; see README for a small example.
 
-The project has focused `unittest` coverage under `tests/` for metadata integrity and locking.
-`main.py`, `swarm_file.py`, `swarm_sql.py`, and the `nfscache.database.oracle_read` cold/warm logging are still
-useful behavior checks. There is no linter or formatter configured.
+The project has focused `unittest` coverage under `tests/` for metadata integrity, SQL
+invalidation, and locking, plus the Oracle pool/streaming helpers. There is no linter or
+formatter configured.
 
 > **Running uv inside Claude Code's command sandbox:** plain `uv run` fails with
 > `Failed to initialize cache ... .git: Operation not permitted` because the sandbox blocks `.git`
 > files (uv's package cache contains some). Use `uv run --no-cache --no-sync ...` (the env is already
 > synced in `.venv`). This is a sandbox workaround, not a `UV_CACHE_DIR` override. Do **not** set
 > `UV_CACHE_DIR`. Connecting to local Oracle on `localhost:1521` works from the sandbox.
+> Note: `ProcessPoolExecutor` (used by `swarm_stream.py`) cannot allocate semaphores in the
+> sandbox, so the swarm only runs fully outside it; table setup still confirms the Oracle path.
 
 ### Oracle (optional, for the database source path)
 
@@ -53,83 +53,89 @@ from CLI flags, then overridden by a `.env` file (see `nfscache/database/oracle_
 The `.env` file wins when present.
 
 ```bash
-uv run --no-cache --no-sync python -m nfscache.database.oracle_write_container
 uv run --no-cache --no-sync python -m nfscache.database.oracle_write parquet/A_TEST_1048576.parquet
+uv run --no-cache --no-sync python -m nfscache.database.oracle_streaming "select * from A_TEST_1048576" out.parquet
 uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * from A_TEST_1048576"
-uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
 ```
 
-`oracle_read` goes *through the cache*: a miss logs `Serving from Oracle (cache miss): ...`, a hit
-logs `Returning cached object: sql/<TABLE>/<hash>.parquet version=<TABLE>@SCN:<scn>|ROWS:<n>`. To see a
-full cold -> warm -> reload cycle, run it twice, then `oracle_write_container` (advances the SCN), then
-run it again. `oracle_read` currently takes its cached connection settings from `oracle_args()`
-(defaults plus `.env`), so `.env` is the authoritative connection override.
+`oracle_streaming` goes *through the cache*: a miss streams from Oracle and writes the cache file,
+a hit logs `Returning cached object: sql/<TABLE>/<hash>.parquet version=<TABLE>@SCN:<scn>|ROWS:<n>`.
+To see a full cold -> warm -> reload cycle, run it twice, then `oracle_write` (advances the SCN),
+then run it again. `oracle_read` is a standalone Oracle smoke test (no cache): it reads SQL into a
+PyArrow `Table` and logs it.
 
 ## Architecture
 
 ### Core: `nfscache/nfs_cache.py` — `NFSCache`
 
-The whole caching engine is one class exposing **two decorators** that wrap any
-`Callable[..., DataContainer]`. The wrapped function is the cold-load source; the decorator handles
-locking, invalidation, read, and write. Both funnel into the shared `_run_cached(display_key,
-version_fn, load_fn)` flow — they differ only in how the cache key and source version are derived:
+The caching engine is one class exposing **one decorator**, `@nfscache.sql_parquet`, that wraps a
+`Callable[..., None]` whose job is to write a Parquet file to a given path. The wrapped function is
+the cold-load source; the decorator handles locking, invalidation, the streaming write, and the
+atomic export. It funnels into `_run_cached_parquet(display_key, version_fn, write_fn)`.
 
-- `@nfscache.parquet` — for file/in-process sources. Key and version come from
-  the decorated call's `filename` argument.
-- `@nfscache.sql` — for SQL sources. First arg is the SQL string (optional
-  `return_cols=` kwarg). Key is `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read
-  from Oracle as `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
-  `NFSCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`.
+- `@nfscache.sql_parquet` — first arg is the SQL string (optional `return_cols=` kwarg); a path
+  argument named `parquet_path` or `output_path` receives the destination. Key is
+  `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read from Oracle as
+  `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
+  `NFSCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`. On a cache miss the
+  wrapped function is called with the path replaced by a `*.part` file; on a hit the validated cache
+  file is copied to the requested output path.
 
 `connect_factory` is an opaque `Callable[[], connection]` set on the `NFSCache` instance (see
-`nfscache/database/oracle_read.py`, which assigns `nfscache.connect_factory = lambda: connect(oracle_args())`).
-It is kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled.
+`nfscache/database/oracle_streaming.py` and `swarm_stream.py`, which assign a pooled factory). It is
+kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled and
+entries are validated by parquet bytes/schema only.
 
 Key mechanics to understand before changing:
 
-- **Cache key / path** (`_parquet_display_key` + `_cache_path`): for `parquet`,
-  the `filename` argument is the key and the cache mirrors that path under
-  `cache_dir`. Absolute paths and paths containing `..` are hashed into
-  `_absolute/` or `_relative/` subdirs.
+- **Cache key / path** (`_sql_display_key` + `_cache_path`): the normalized SQL (plus optional
+  `return_cols`) hashes into `sql/<TABLE>/<hash>.parquet` under `cache_dir`. Absolute paths and paths
+  containing `..` are hashed into `_absolute/` or `_relative/` subdirs.
 - **Locking** (`_acquire_read_lock` + `_acquire_write_lock`): a per-cache-key directory read/write
-  lock via `mkdir` (atomic on NFS). Warm readers create per-reader tokens and can overlap. Writers
-  create a writer-intent directory, block new readers, and wait for active readers to drain before
-  writing or revalidating stale entries. Reader tokens and writer intent store `lock.json` metadata
-  (`hostname`, `pid`, `uuid`, `created_at`, `last_seen`) and update `last_seen` by heartbeat while
-  held. Locks older than `stale_lock_seconds` are broken. The default stale timeout is 30 minutes so
-  a live 10-minute Oracle cold read is not treated as abandoned.
-- **Invalidation** (`_source_version` + `_read_valid_metadata`): a sidecar `*.meta.json` stores the
-  `source_version`, source key, parquet size/checksum, row count, column count, and schema hash.
-  Default version for a file source is `sha256:<hash>` of file content; SQL entries use
-  `MAX(ORA_ROWSCN)|ROWS`. If the source version is `None`, metadata still exists and the entry is
-  validated by parquet bytes/schema.
-- **Stable cold load** (`_load_stable`): reads source version before and after calling the source
-  function; if it changed mid-load, it retries, so a cache entry is never written for a torn read.
-- **Atomic write** (`_write_data_container`): writes to a unique `*.part` file
-  (`pid + uuid` suffix), then `os.replace` onto the final path. Partials are cleaned up on failure.
-  Only `DataContainer.data.rows_data_pl` (the Polars DataFrame) is persisted, via `pyarrow.parquet`.
-
-### Data model: `nfscache/data/`
-
-- `DataContainer` (`data_container.py`): `__slots__`-based wrapper built from
-  `{"headers": tuple, "data": pl.DataFrame}`. Holds a single `DataHolder` on `.data`.
-- `DataHolder` (`data_holder.py`): `.headers` (tuple) and `.rows_data_pl` (the Polars DataFrame).
-  This `data.rows_data_pl` path is what the cache reads/writes — keep it a `pl.DataFrame`.
+  lock via `mkdir` (atomic on NFS; resilient removal + `mkdir` retry for SMB/Windows). Warm readers
+  create per-reader tokens and can overlap. Writers create a writer-intent directory, block new
+  readers, and wait for active readers to drain before writing or revalidating stale entries. Reader
+  tokens and writer intent store `lock.json` metadata (`hostname`, `pid`, `uuid`, `created_at`,
+  `last_seen`) and update `last_seen` by heartbeat while held. Locks older than `stale_lock_seconds`
+  are broken. The default stale timeout is 30 minutes so a live 10-minute Oracle cold read is not
+  treated as abandoned.
+- **Invalidation** (`_sql_source_version` + `_read_valid_metadata`): a sidecar `*.meta.json` stores the
+  `source_version`, source key, parquet size/checksum, row count, column count, and schema hash. SQL
+  entries use `MAX(ORA_ROWSCN)|ROWS`. If the source version is `None`, the entry is validated by
+  parquet bytes/schema.
+- **Stable cold load** (in `_run_cached_parquet`): reads source version before and after running the
+  write function; if it changed mid-stream, it discards the part file and retries, so a cache entry is
+  never written for a torn read.
+- **Atomic write** (`_write_parquet_file_entry`): the wrapped function streams into a unique `*.part`
+  file (`pid + uuid` suffix); the entry is committed by `os.replace` of the parquet then the metadata
+  sidecar (metadata is authoritative). Partials are cleaned up on failure.
 
 ### Database layer: `nfscache/database/`
 
-Each `oracle_*.py` is a self-contained CLI. `oracle_write*.py` map Polars dtypes to Oracle DDL
-(`oracle_type`), validate identifiers (`oracle_identifier`), create/drop the table, and `executemany`
-in batches; they print `current_scn` before/after to demonstrate the SCN-based version token.
-`oracle_read.py` wires the SQL cache to Oracle (sets `connect_factory`, decorates with
-`nfscache.sql`). `oracle_env.py` is a tiny dependency-free `.env` reader (no python-dotenv);
-it degrades to defaults when `.env` is missing **or unreadable** rather than crashing.
-`swarm_sql.py` creates a test table, runs `@nfscache.sql` clients in separate processes, and rewrites
-the table between read waves to verify SQL cache invalidation under load.
+- `oracle_streaming.py` — the canonical `@nfscache.sql_parquet` CLI: fetches with a cursor and writes
+  batches via `pyarrow.parquet.ParquetWriter`, mapping Oracle column types to Arrow types
+  (`_arrow_type` / `_rows_to_table`). The Oracle→Arrow helpers here are reused by `oracle_read.py` and
+  `swarm_stream.py` via import; `oracle_read.py` keeps its own copy to stay free of `NFSCache`.
+- `oracle_write.py` — reads a Parquet file with PyArrow and writes it to Oracle: maps Arrow types to
+  Oracle DDL (`oracle_type`), validates identifiers (`oracle_identifier`), creates/drops the table,
+  and `executemany` in batches; prints `current_scn` before/after.
+- `oracle_read.py` — standalone Oracle smoke test: reads SQL into a PyArrow `Table` and logs it. No
+  cache, no `NFSCache` dependency (only `oracle_env.apply_dotenv`).
+- `oracle_pool.py` — process-local `oracledb` connection pool exposed as a `connect_factory`.
+- `oracle_env.py` — a tiny dependency-free `.env` reader (no python-dotenv); degrades to defaults when
+  `.env` is missing **or unreadable** rather than crashing.
+
+### Util layer: `nfscache/util/`
+
+- `generate_parquets.py` — builds test parquet files directly as PyArrow tables (numpy-backed
+  columns) and writes them with `pyarrow.parquet`, via a `*.part` + `os.replace` promotion.
+- `swarm_stream.py` — creates a test Oracle table, runs `@nfscache.sql_parquet` clients in separate
+  processes, and rewrites the table between read waves to verify SQL cache invalidation under load.
+  It inlines its own Oracle table setup/insert helpers (it is self-contained).
 
 ### Caveats / WIP
 
 - The README "Production Notes" list the known gaps (validating `mkdir`/stale-lock recovery/
-  `os.replace` on a real NFS mount, structured metrics, failure tests).
+  `os.replace` on a real NFS or SMB mount, structured metrics, failure tests).
 - `MAX(ORA_ROWSCN)` is block-level granularity unless the table was created `ROWDEPENDENCIES`; it is
   monotonic enough as a version token, and the row count in the version string is the extra guard.

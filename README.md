@@ -1,13 +1,12 @@
 # nfscache
 
-Prototype shared-filesystem cache for `DataContainer` objects whose payload is
-a Polars `DataFrame`. The original target is NFS, and the locking now also
-covers SMB/Windows shares (the lock-directory removal and `mkdir` retry paths
-tolerate the racier removal semantics of SMB).
+Prototype shared-filesystem cache for Parquet data. The original target is NFS,
+and the locking now also covers SMB/Windows shares (the lock-directory removal
+and `mkdir` retry paths tolerate the racier removal semantics of SMB).
 
-The cache stores container data as Parquet on a shared filesystem. Cold loads
-can read from any slow source, for example Oracle, MySQL, or a local parquet
-file. Warm loads use `polars.read_parquet`.
+A cold load streams results from any slow source (for example Oracle) straight
+into a Parquet cache file; a warm load returns the validated cache file. The
+cache reads and writes Parquet with PyArrow and has no DataFrame dependency.
 
 ## Install
 
@@ -24,14 +23,12 @@ uv add nfscache[oracle]
 
 ## Usage
 
-Create an `NFSCache` pointed at a directory on the shared filesystem, then wrap
-your cold-load function with a decorator. The wrapped function only runs on a
-cache miss; warm hits are served from the Parquet cache.
-
-The example below uses the Oracle SQL source path, so it needs the `oracle`
-extra (`uv add nfscache[oracle]`). For a file-backed source that works with
-the base install, use `@nfscache.parquet` (see
-`nfscache/util/main.py`).
+Create an `NFSCache` pointed at a directory on the shared filesystem, set
+`connect_factory` (a `Callable[[], connection]` used to read the source
+version), and wrap your cold-load function with `@nfscache.sql_parquet`. The
+wrapped function only runs on a cache miss; on a warm hit the body is skipped
+and the validated cache file is copied to the requested output path through an
+atomic `*.part` + `os.replace` export.
 
 ```python
 from pathlib import Path
@@ -50,44 +47,37 @@ nfscache.connect_factory = lambda: oracledb.connect(
 )
 
 
-# SQL source streamed straight to the cache parquet file. On a warm hit, the
-# function body is skipped and the validated cache file is copied to `filename`
-# through an atomic `*.part` + `os.replace` export.
+# The first argument is the SQL string; the second is the requested output
+# path. The cache key comes from the normalized SQL, and the source version
+# from MAX(ORA_ROWSCN) plus the row count of the detected FROM table.
 @nfscache.sql_parquet
-def stream(sql: str, filename: Path, connection) -> None:
+def stream(sql: str, parquet_path: Path, connection) -> None:
     table = pa.table({"example": [1, 2, 3]})  # replace with cursor.fetchmany()
-    pq.write_table(table, filename)
+    pq.write_table(table, parquet_path)
 
 
 with nfscache.connect_factory() as connection:
     stream(
-        "select * from DATA_CONTAINER_DEMO",
-        Path("DATA_CONTAINER_DEMO.parquet"),
+        "select * from DEMO",
+        Path("DEMO.parquet"),
         connection,
     )
 ```
 
-For SQL sources, set `nfscache.connect_factory` (a `Callable[[], connection]`)
-and use `@nfscache.sql_parquet` when the cold load should stream directly into
-the cache parquet file. The first argument is the SQL string, and the second is
-the requested output filename. The cache key is derived from the normalized SQL
-and the source version from `MAX(ORA_ROWSCN)` plus the row count. See
-`nfscache/database/oracle_streaming.py` for a complete Oracle streaming example.
-Use `@nfscache.sql` instead when the cold load returns a materialized
-`DataContainer`; see `nfscache/database/oracle_read.py`.
+See `nfscache/database/oracle_streaming.py` for a complete Oracle streaming
+example that fetches with a cursor and writes batches via
+`pyarrow.parquet.ParquetWriter`.
 
 ## Current Functionality
 
-- Decorator API: `@nfscache.sql_parquet`, `@nfscache.sql`, and
-  `@nfscache.parquet`.
-- Stores `DataContainer.data.rows_data_pl` as a Parquet cache file, or streams
-  SQL results directly into a cached Parquet file with `@nfscache.sql_parquet`.
-- Reads cached objects with the fast Polars parquet reader.
-- Writes cached objects with `pyarrow.parquet.ParquetWriter`.
+- Decorator API: `@nfscache.sql_parquet` — streams a SQL result set directly
+  into a cached Parquet file.
+- Writes cached Parquet with `pyarrow.parquet.ParquetWriter`; reads and
+  validates it with `pyarrow.parquet`.
 - Writes through unique `*.part` files, then atomically replaces the final file
   with `os.replace`.
-- Exports `@nfscache.sql_parquet` results by copying the validated cache file to
-  an output `*.part` file, then atomically replacing the requested output path.
+- Exports results by copying the validated cache file to an output `*.part`
+  file, then atomically replacing the requested output path.
 - Cleans up partial cache files on write failure.
 - Uses a per-cache-key mkdir-based read/write lock: warm readers create
   per-reader tokens and can overlap, while writers and invalidations block new
@@ -100,124 +90,58 @@ Use `@nfscache.sql` instead when the cold load returns a materialized
 - Adds an authoritative metadata sidecar:
 
 ```text
-__cache__/nfs/parquet/A_TEST_1048576.parquet
-__cache__/nfs/parquet/A_TEST_1048576.parquet.meta.json
+__cache__/nfs/sql/DEMO/<hash>.parquet
+__cache__/nfs/sql/DEMO/<hash>.parquet.meta.json
 ```
 
 - Metadata includes source key/version, parquet byte size, parquet SHA-256, row
   count, column count, schema hash, writer version, created time, and normalized
-  `source_sql` for SQL-backed entries.
+  `source_sql`.
 - Readers reject missing, stale, unsupported, or corrupt metadata and validate
   parquet size/checksum/row count/schema hash before returning a warm hit.
 - Invalidates stale cache entries when the source version changes.
-- For file path arguments, the default source version is a SHA-256 content hash.
 - SQL sources use normalized SQL for cache keys and `COUNT(*)` plus
   `MAX(ORA_ROWSCN)` as the Oracle version token for the detected `FROM` table.
-- Cold loads re-read the source version before and after loading and retry if
+- Cold loads re-read the source version before and after streaming and retry if
   the source changes during the read.
-
-## Demo
-
-From a source checkout, run:
-
-```bash
-uv run --no-cache --no-sync python -m nfscache.util.main
-```
-
-`main.py` runs:
-
-1. clear `__cache__`
-2. generate parquet source data
-3. cold load and write cache
-4. warm cache load
-5. regenerate parquet source data
-6. reload because the source hash changed
-7. warm cache load again
-
-Expected shape:
-
-```text
-Clearing cache: __cache__
-Generating: parquet/A_TEST_1048576.parquet...
-Reading: parquet/A_TEST_1048576.parquet...
-Returning cached object: parquet/A_TEST_1048576.parquet sha=<first 40 chars>...
-Generating: parquet/A_TEST_1048576.parquet...
-Ignoring cache entry: parquet/A_TEST_1048576.parquet: stale source version
-Reading: parquet/A_TEST_1048576.parquet...
-Returning cached object: parquet/A_TEST_1048576.parquet sha=<first 40 chars>...
-```
 
 ## Swarm Test
 
-`swarm_file.py` tests a multi-client environment with process-level concurrency.
-It mixes cache gets with source regeneration to simulate clients reading while
-the source data changes.
+`swarm_stream.py` tests the cache under process-level concurrency. It creates an
+Oracle table, runs client processes that stream reads through
+`@nfscache.sql_parquet`, and rewrites the table between read waves so the cache
+has to invalidate and reload under load.
 
-Run the default swarm:
+Start Oracle first, then run the default swarm:
 
 ```bash
-uv run --no-cache --no-sync python -m nfscache.util.swarm_file
+uv run --no-cache --no-sync python -m nfscache.util.swarm_stream
 ```
 
 Default behavior:
 
 - 4 client processes
+- 1 writer process
 - 12 get waves
-- 6 source regenerations
-- generations are injected throughout the get waves
-- final warm check after all waves complete
+- 6 source regenerations injected throughout the get waves
+- final multi-client warm check after all waves complete
 
 Useful smaller run:
 
 ```bash
-uv run --no-cache --no-sync python -m nfscache.util.swarm_file \
-  --clients 3 \
-  --generators 1 \
-  --gets-per-client 6 \
-  --generations 3 \
-  --n-rows 1024 \
-  --cols 6 \
-  --n-int-cols 2 \
-  --n-str-cols 1 \
-  --data-dir /tmp/parquet-nfs-wave-swarm-parquet \
-  --cache-dir /tmp/parquet-nfs-wave-swarm-cache
-```
-
-Swarm output includes:
-
-- source generation hash
-- cold `Reading: ...` reloads after invalidation
-- warm `Returning cached object: ... sha=...` hits
-- final multi-client warm check
-
-## SQL Swarm Test
-
-`swarm_sql.py` tests the same process-level concurrency path for Oracle-backed
-SQL reads. It creates an Oracle table, runs client reads through `@nfscache.sql`,
-and rewrites the table between read waves so the cache has to invalidate and
-reload under load.
-
-Start Oracle first, then run:
-
-```bash
-uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
-```
-
-Useful smaller run:
-
-```bash
-uv run --no-cache --no-sync python -m nfscache.util.swarm_sql \
+uv run --no-cache --no-sync python -m nfscache.util.swarm_stream \
   --clients 2 \
   --writers 1 \
   --gets-per-client 3 \
   --generations 2 \
   --n-rows 128 \
   --batch-size 64 \
-  --table SWARM_SQL_TEST \
-  --cache-dir /tmp/parquet-nfs-swarm-sql-cache
+  --table SWARM_STREAM_TEST \
+  --out-dir /tmp/parquet-nfs-swarm-stream-out \
+  --cache-dir /tmp/parquet-nfs-swarm-stream-cache
 ```
 
-SQL swarm output includes Oracle cold reads, writer SCNs, stale SQL cache
+Swarm output includes Oracle cold streams, writer SCNs, stale SQL cache
 invalidation, warm cache hits, and a final multi-client warm check.
 
 ## Tests
@@ -229,8 +153,8 @@ uv run --no-cache --no-sync python -m unittest discover -s tests
 ```
 
 The tests cover authoritative metadata, corrupted metadata/parquet recovery,
-normalized SQL metadata, overlapping warm readers, and writer-preference
-locking. A syntax check for all modules:
+normalized SQL metadata, overlapping warm readers, writer-preference locking,
+and the Oracle pool/streaming helpers. A syntax check for all modules:
 
 ```bash
 uv run --no-cache --no-sync python -m compileall -q nfscache tests
@@ -238,7 +162,7 @@ uv run --no-cache --no-sync python -m compileall -q nfscache tests
 
 ## Generate Parquets
 
-Generate or replace test parquet files:
+Generate or replace test parquet files (built and written with PyArrow):
 
 ```bash
 uv run --no-cache --no-sync python -m nfscache.util.generate_parquets
@@ -268,24 +192,26 @@ Start the local Oracle demo container:
 ./build_and_run.sh [--wipe]
 ```
 
-Populate the demo table:
+Load a generated parquet file into an Oracle table (PyArrow → Oracle DDL +
+`executemany`):
 
 ```bash
-uv run --no-cache --no-sync python -m nfscache.database.oracle_write_container
+uv run --no-cache --no-sync python -m nfscache.database.oracle_write parquet/A_TEST_1048576.parquet
 ```
 
 Stream Oracle SQL directly through the SQL Parquet cache:
 
 ```bash
 uv run --no-cache --no-sync python -m nfscache.database.oracle_streaming \
-  "select * from DATA_CONTAINER_DEMO" \
-  DATA_CONTAINER_DEMO.parquet
+  "select * from A_TEST_1048576" \
+  A_TEST_1048576.parquet
 ```
 
-Read into a materialized `DataContainer` through the SQL cache:
+`oracle_read.py` is a standalone Oracle smoke test (no cache): it reads a SQL
+result set into a PyArrow `Table` and logs it.
 
 ```bash
-uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * from DATA_CONTAINER_DEMO"
+uv run --no-cache --no-sync python -m nfscache.database.oracle_read "select * from A_TEST_1048576"
 ```
 
 SQL cache keys use normalized SQL plus requested columns. Metadata stores the
@@ -314,3 +240,5 @@ clients, the next important pieces are:
   (NFS and SMB clients against one cache)
 - add operational controls for cache retention, quotas, old `*.part` cleanup,
   version migration, compression, permissions, and bad-key runbooks
+```
+
