@@ -76,9 +76,14 @@ The design relies on mkdir for lock tokens and os.replace for atomic
 replacement. Those are the right primitives, but behavior depends on the share
 type (NFS version or SMB/Windows), mount options, attribute caching, server
 implementation, and multi-host timing. The SMB/Windows code paths exist
-(resilient lock-dir removal, mkdir retry), but prove same-key and different-key
-behavior on the actual deployment share - including a mixed NFS-Linux +
-SMB-Windows client pool sharing one cache directory - not only on local disk.
+(resilient lock-dir removal, mkdir retry) and have now been validated against a
+real SMB share: a macOS client mounted a Windows 10 Pro share over mount_smbfs,
+the streaming swarm committed a consistent cache (matching checksums, valid
+parquet, intact metadata), and the full locking suite passed over the mount,
+including stale reader-token and writer-intent recovery. Still to prove on the
+actual deployment share: a mixed NFS-Linux + SMB-Windows client pool sharing
+one cache directory across multiple hosts, and same-key/different-key behavior
+under that multi-protocol, multi-host timing.
 
 2. Strengthen the Oracle consistency model
 

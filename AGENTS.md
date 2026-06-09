@@ -32,4 +32,4 @@ Recent commits are short and scope-focused, often naming the touched feature, su
 
 ## Security & Configuration Tips
 
-Oracle defaults are development-only (`SOMEUSER`/`cache`, local `FREEPDB1`). Keep `.env`, generated parquet data, cache directories, and logs out of commits. Validate `mkdir` lock tokens, stale-lock recovery, and `os.replace` on the target NFS or SMB mount before treating this as production-safe.
+Oracle defaults are development-only (`SOMEUSER`/`cache`, local `FREEPDB1`). Keep `.env`, generated parquet data, cache directories, and logs out of commits. Validate `mkdir` lock tokens, stale-lock recovery, and `os.replace` on the target NFS or SMB mount before treating this as production-safe. These have been validated against a real SMB share (a macOS `mount_smbfs` client against a Windows 10 Pro share) — the streaming swarm and the full locking suite, including stale reader/writer recovery, pass over the mount; a mixed multi-host NFS + SMB client pool is still unvalidated.

@@ -135,7 +135,10 @@ Key mechanics to understand before changing:
 
 ### Caveats / WIP
 
-- The README "Production Notes" list the known gaps (validating `mkdir`/stale-lock recovery/
-  `os.replace` on a real NFS or SMB mount, structured metrics, failure tests).
+- The README "Production Notes" list the known gaps (structured metrics, failure tests, and a
+  mixed multi-host NFS + SMB client pool). Validating `mkdir`/stale-lock recovery/`os.replace`
+  on a real SMB mount is **done**: a macOS `mount_smbfs` client against a Windows 10 Pro share
+  ran the streaming swarm (consistent cache: matching checksums, valid parquet, intact metadata)
+  and the full locking suite — including stale reader/writer recovery — over the mount.
 - `MAX(ORA_ROWSCN)` is block-level granularity unless the table was created `ROWDEPENDENCIES`; it is
   monotonic enough as a version token, and the row count in the version string is the extra guard.

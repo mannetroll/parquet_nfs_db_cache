@@ -2,7 +2,11 @@
 
 Prototype shared-filesystem cache for Parquet data. The original target is NFS,
 and the locking now also covers SMB/Windows shares (the lock-directory removal
-and `mkdir` retry paths tolerate the racier removal semantics of SMB).
+and `mkdir` retry paths tolerate the racier removal semantics of SMB). The
+SMB/Windows path has been validated end-to-end against a real share (a macOS
+client over `mount_smbfs` against a Windows 10 Pro share): the concurrent
+streaming swarm and the full locking suite — including stale reader/writer
+recovery — pass over the mounted share, not just on local disk.
 
 A cold load streams results from any slow source (for example Oracle) straight
 into a Parquet cache file; a warm load returns the validated cache file. The
@@ -224,14 +228,18 @@ copy to the requested output path.
 
 This is not yet production-grade enterprise software.
 
+The core lock and atomic-export primitives have been validated on a real SMB
+share: a macOS `mount_smbfs` client against a Windows 10 Pro share ran the
+streaming swarm (which committed a consistent cache) and the full locking suite
+over the mount, including `mkdir` lock tokens, writer intent, stale reader/writer
+recovery, and `os.replace`.
+
 For Oracle on a shared filesystem (NFS, or an SMB/Windows share) with many
 clients, the next important pieces are:
 
-- validate `mkdir` lock tokens, writer intent, stale-lock recovery, and
-  `os.replace` semantics on the actual mounts. The SMB/Windows code paths
-  exist (resilient lock-dir removal, `mkdir` retry); what is missing is
-  validation against a real SMB share and a mixed NFS-Linux + SMB-Windows
-  client pool sharing one cache directory
+- validate the same primitives against a real NFS mount and against a mixed
+  NFS-Linux + SMB-Windows client pool sharing one cache directory across
+  multiple hosts (only a single SMB host has been exercised so far)
 - tie long Oracle reads to a documented consistent SCN/snapshot strategy
 - add structured logs and metrics for hit/miss/reload, reader/writer lock wait,
   cold load duration, parquet write/read duration, and corruption/retry counts
