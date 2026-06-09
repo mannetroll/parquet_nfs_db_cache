@@ -1,7 +1,9 @@
 # nfscache
 
-Prototype NFS-backed cache for `DataContainer` objects whose payload is a
-Polars `DataFrame`.
+Prototype shared-filesystem cache for `DataContainer` objects whose payload is
+a Polars `DataFrame`. The original target is NFS, and the locking now also
+covers SMB/Windows shares (the lock-directory removal and `mkdir` retry paths
+tolerate the racier removal semantics of SMB).
 
 The cache stores container data as Parquet on a shared filesystem. Cold loads
 can read from any slow source, for example Oracle, MySQL, or a local parquet
@@ -296,14 +298,19 @@ copy to the requested output path.
 
 This is not yet production-grade enterprise software.
 
-For Oracle on NFS with many clients, the next important pieces are:
+For Oracle on a shared filesystem (NFS, or an SMB/Windows share) with many
+clients, the next important pieces are:
 
 - validate `mkdir` lock tokens, writer intent, stale-lock recovery, and
-  `os.replace` semantics on the actual NFS mount
+  `os.replace` semantics on the actual mounts. The SMB/Windows code paths
+  exist (resilient lock-dir removal, `mkdir` retry); what is missing is
+  validation against a real SMB share and a mixed NFS-Linux + SMB-Windows
+  client pool sharing one cache directory
 - tie long Oracle reads to a documented consistent SCN/snapshot strategy
 - add structured logs and metrics for hit/miss/reload, reader/writer lock wait,
   cold load duration, parquet write/read duration, and corruption/retry counts
 - broaden automated failure tests for crashed lock holders, corrupted files,
-  source changes during cold load, and multi-host NFS integration
+  source changes during cold load, and multi-host / multi-protocol integration
+  (NFS and SMB clients against one cache)
 - add operational controls for cache retention, quotas, old `*.part` cleanup,
   version migration, compression, permissions, and bad-key runbooks
