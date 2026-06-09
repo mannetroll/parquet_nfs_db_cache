@@ -1,21 +1,22 @@
-Parquet-backed NFS cache for DataContainer objects
+Parquet-backed shared-filesystem cache (NFS / SMB)
 ==================================================
 
 Goal
 ----
 
-Cache DataContainer payloads whose data is a Polars DataFrame. Cold loads can
-come from slow sources such as Oracle or local parquet files. Warm loads read a
-Parquet cache file from an NFS-mounted shared directory with Polars.
+Cache SQL result sets as Parquet on a shared filesystem. A cold load streams
+from a slow source such as Oracle straight into a Parquet cache file; a warm
+load returns the validated cache file from the shared directory (NFS, or an
+SMB/Windows share). Everything is read and written with PyArrow; there is no
+DataFrame dependency.
 
 Current implementation
 ----------------------
 
-- NFSCache exposes two decorators:
-  - @nfscache.parquet for file or function sources.
-  - @nfscache.sql for Oracle SQL sources.
-- Data is persisted with pyarrow.parquet.ParquetWriter and read with
-  polars.read_parquet.
+- NFSCache exposes one decorator:
+  - @nfscache.sql_parquet for SQL sources; the wrapped function streams the
+    result set into the Parquet path it is handed.
+- Data is persisted and read with pyarrow.parquet.
 - Cache writes use unique *.part files and os.replace for final replacement.
 - Per-key locking is a mkdir-based read/write lock:
   - warm readers create per-reader lock tokens and can overlap
@@ -26,16 +27,16 @@ Current implementation
   - held locks update last_seen with a heartbeat while the process is alive
   - stale reader/writer locks are broken after stale_lock_seconds
   - the default stale timeout is 30 minutes to allow 10-minute cold Oracle reads
+  - resilient lock-dir removal and mkdir retry tolerate the racier removal
+    semantics of SMB/Windows shares
   - lock cleanup removes per-client reader/writer tokens but leaves shared
     coordination directories in place to avoid races under process load
 - Metadata sidecars are authoritative commit markers. They store source_key,
   source_version, parquet byte size, parquet SHA-256, row count, column count,
-  schema hash, writer version, created_at, and normalized source_sql for
-  SQL-backed entries.
+  schema hash, writer version, created_at, and normalized source_sql.
 - Readers reject cache entries with missing, stale, unsupported, or corrupt
   metadata, and validate parquet size/checksum/row count/schema hash before a
   warm hit.
-- File sources use SHA-256 content hashes by default.
 - SQL sources use normalized SQL for cache keys and an Oracle version token:
   COUNT(*) plus MAX(ORA_ROWSCN) for the detected FROM table.
 - Cold loads re-read the source version before and after loading and retry if
@@ -44,22 +45,23 @@ Current implementation
 Behavior checks
 ---------------
 
-- main.py clears __cache__ at startup, then demonstrates cold load, warm hit,
-  source regeneration, stale invalidation, reload, and warm hit.
-- swarm_file.py exercises multi-process cache use and source regeneration.
-- swarm_sql.py exercises Oracle SQL cache use while writer processes rewrite
-  the source table under client read load.
+- swarm_stream.py creates an Oracle table, runs @nfscache.sql_parquet clients in
+  separate processes, and rewrites the table between read waves to exercise
+  cache invalidation under client read load.
+- oracle_streaming.py is the canonical @nfscache.sql_parquet CLI (cold stream ->
+  warm hit -> reload); oracle_read.py is a standalone Oracle read into a PyArrow
+  table (no cache).
 - tests/ contains focused unittest coverage for authoritative metadata,
-  corrupted cache recovery, normalized SQL metadata, overlapping warm readers,
-  and writer-preference locking.
+  corrupted cache recovery, normalized SQL metadata, SQL version invalidation,
+  overlapping warm readers, and writer-preference locking, plus the Oracle
+  pool/streaming helpers.
 
 Useful commands:
 
   uv run --no-cache --no-sync python -m unittest discover -s tests
   uv run --no-cache --no-sync python -m compileall -q nfscache tests
-  uv run --no-cache --no-sync python -m nfscache.util.main
-  uv run --no-cache --no-sync python -m nfscache.util.swarm_file
-  uv run --no-cache --no-sync python -m nfscache.util.swarm_sql
+  uv run --no-cache --no-sync python -m nfscache.util.swarm_stream
+  uv run --no-cache --no-sync python -m nfscache.util.generate_parquets
 
 What is left to be enterprise-ready
 -----------------------------------
@@ -68,13 +70,15 @@ This is a working prototype, not an enterprise-ready cache yet. The remaining
 work is mostly operational hardening, consistency guarantees, and automated
 failure coverage.
 
-1. Validate on the real NFS mount
+1. Validate on the real NFS / SMB mount
 
 The design relies on mkdir for lock tokens and os.replace for atomic
-replacement. Those are the right primitives, but behavior depends on NFS
-version, mount options, attribute caching, server implementation, and multi-host
-timing. Prove same-key and different-key behavior on the actual deployment NFS,
-not only on local disk.
+replacement. Those are the right primitives, but behavior depends on the share
+type (NFS version or SMB/Windows), mount options, attribute caching, server
+implementation, and multi-host timing. The SMB/Windows code paths exist
+(resilient lock-dir removal, mkdir retry), but prove same-key and different-key
+behavior on the actual deployment share - including a mixed NFS-Linux +
+SMB-Windows client pool sharing one cache directory - not only on local disk.
 
 2. Strengthen the Oracle consistency model
 
@@ -108,7 +112,7 @@ repeatable tests for:
 - source changes during a cold DB read
 - concurrent same-key clients across processes
 - concurrent different-key clients across processes
-- NFS-mounted integration runs across multiple hosts or containers
+- NFS- and SMB-mounted integration runs across multiple hosts or containers
 
 5. Add operational controls
 
@@ -126,7 +130,7 @@ Recommended next steps
 ----------------------
 
 1. Validate mkdir, per-reader tokens, writer intent, stale-lock recovery, and
-   os.replace on the target NFS mount.
+   os.replace on the target NFS or SMB mount.
 2. Upgrade Oracle reads to a documented consistent-SCN strategy.
 3. Add structured logging and metrics.
 4. Broaden crash/corruption/source-change tests.
