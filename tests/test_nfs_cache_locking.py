@@ -488,6 +488,13 @@ class NFSCacheLockingTests(unittest.TestCase):
         self.assertFalse(NFSCache._pid_is_dead(os.getpid()))
         self.assertTrue(NFSCache._pid_is_dead(self._dead_pid()))
 
+    @unittest.skipUnless(os.name == "nt", "Windows-only liveness probe")
+    def test_pid_is_dead_windows_reflects_process_liveness(self) -> None:
+        # os.kill(pid, 0) is a no-op probe on POSIX but not on Windows, so the
+        # Win32 path needs its own check: a live pid is alive, a reaped one dead.
+        self.assertFalse(NFSCache._pid_is_dead_windows(os.getpid()))
+        self.assertTrue(NFSCache._pid_is_dead_windows(self._dead_pid()))
+
     def test_acquire_times_out_when_lock_held_by_live_owner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache = NFSCache(
