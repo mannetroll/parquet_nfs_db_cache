@@ -1,18 +1,18 @@
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 import errno
 import functools
 import hashlib
 import inspect
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import socket
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
-from pathlib import Path
 
 import pyarrow.parquet as pq
 
@@ -21,6 +21,11 @@ CACHE_WRITER_VERSION = "nfscache.v1"
 LOCK_METADATA_VERSION = 1
 SQL_CACHE_FINGERPRINT_HEX_LENGTH = 16
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 class _LockLease:
     def __init__(
@@ -528,7 +533,7 @@ class NFSCache:
             self._restore_stolen_lock(steal_path, lock_path)
             return False
 
-        print(f"Breaking stale cache lock: {lock_path}", flush=True)
+        logger.info(f"Breaking stale cache lock: {lock_path}")
         self._remove_lock_dir(steal_path)
         return True
 
@@ -691,9 +696,8 @@ class NFSCache:
             return None
 
         version_preview = self._version_preview(metadata.get("source_version"))
-        print(
-            f"Returning cached object: {display_key}{version_preview}...",
-            flush=True,
+        logger.info(
+            f"Returning cached object: {display_key}{version_preview}..."
         )
         return cache_path
 
@@ -904,17 +908,15 @@ class NFSCache:
         try:
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            print(
+            logger.info(
                 f"Ignoring incomplete cache entry: {display_key}: "
-                "missing metadata",
-                flush=True,
+                "missing metadata"
             )
             return None
         except json.JSONDecodeError as exc:
-            print(
+            logger.info(
                 f"Ignoring corrupt cache entry: {display_key}: "
-                f"metadata is not valid JSON: {exc}",
-                flush=True,
+                f"metadata is not valid JSON: {exc}"
             )
             return None
 
@@ -926,7 +928,7 @@ class NFSCache:
             source_sql,
         )
         if reason is not None:
-            print(f"Ignoring cache entry: {display_key}: {reason}", flush=True)
+            logger.info(f"Ignoring cache entry: {display_key}: {reason}")
             return None
 
         return metadata
