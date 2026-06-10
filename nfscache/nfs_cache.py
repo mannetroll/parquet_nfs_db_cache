@@ -48,7 +48,7 @@ class NFSCache:
         cache_dir: Path,
         *,
         poll_seconds: float = 0.1,
-        stale_lock_seconds: float = 1800.0,
+        stale_lock_seconds: float = 900.0,
         heartbeat_seconds: float | None = None,
         connect_factory: Callable[[], object] | None = None,
         verify_checksum: bool = False,

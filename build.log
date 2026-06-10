@@ -31,3 +31,23 @@ uv run --no-cache --no-sync python -m nfscache.util.swarm_stream --clients 6 --w
 sudo mount -t cifs //192.168.0.8/win10cache /mnt/win10cache   -o username=drtobbe,domain=Farin,vers=3.0,uid=$(id -u),gid=$(id -g)
 uv run --no-cache --no-sync python -m nfscache.util.swarm_stream --clients 6 --writers 2 --gets-per-client 12 --generations 4 --cache-dir /mnt/win10cache/swarm --out-dir /mnt/win10cache/out
 
+
+#
+# From your own console (not the sandbox), plain uv works:
+#
+
+uv run python -m unittest discover -s tests
+
+Useful variants:
+
+# verbose: one line per test
+uv run python -m unittest discover -s tests -v
+
+# stop at first failure
+uv run python -m unittest discover -s tests -f
+
+# a single file / class / test
+uv run python -m unittest tests.test_nfs_cache_locking
+uv run python -m unittest tests.test_nfs_cache_metadata.NFSCacheMetadataTests
+uv run python -m unittest tests.test_nfs_cache_metadata.NFSCacheMetadataTests.test_warm_hit_skips_full_file_hash_by_default
+
