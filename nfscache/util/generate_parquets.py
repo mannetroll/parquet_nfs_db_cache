@@ -163,7 +163,7 @@ if __name__ == "__main__":
     ap.add_argument("--n-min", type=int, default=20)
     ap.add_argument("--n-max", type=int, default=20)
     ap.add_argument("--cols", type=int, default=20)
-    ap.add_argument("--data-dir", default="../../parquet")
+    ap.add_argument("--data-dir", default=str(Path(__file__).resolve().parents[2] / "parquet"))
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--float-scale", type=float, default=5.0)
     ap.add_argument("--n-int-cols", type=int, default=4)
