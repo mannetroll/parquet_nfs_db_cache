@@ -185,37 +185,34 @@ class NFSCache:
             if cached_path is not None:
                 return export_fn(cached_path)
 
-            while True:
-                part_path = self._part_path(cache_path)
-                meta_part_path = self._part_path(meta_path)
-                try:
-                    write_fn(part_path)
-                    source_version_after = version_fn()
-                    if source_version == source_version_after:
-                        self._write_parquet_file_entry(
-                            part_path,
-                            cache_path,
-                            meta_part_path,
-                            meta_path,
-                            display_key,
-                            source_version_after,
-                            source_sql,
-                        )
-                        return export_fn(cache_path)
-
-                    print(
-                        "Source changed while streaming; retrying cold load...",
-                        flush=True,
-                    )
-                    self._remove_file(part_path)
-                    self._remove_file(meta_part_path)
-                    # The version seen after this torn attempt is the "before"
-                    # bracket for the next one, so the retry adds no extra query.
-                    source_version = source_version_after
-                except Exception:
-                    self._remove_file(part_path)
-                    self._remove_file(meta_part_path)
-                    raise
+            # The version is snapshotted once, before the write, and stored as
+            # the entry's version. A streaming source that gives statement-level
+            # read consistency (Oracle) produces a snapshot that cannot be torn,
+            # so there is no need to bracket the write with a second read. If the
+            # table did change between this read and the write's snapshot, the
+            # stored version is merely older than the data, so the next reader
+            # recomputes a newer version, misses, and reloads exactly once --
+            # never serving stale. This also sidesteps MAX(ORA_ROWSCN) drift from
+            # delayed block cleanout, which would otherwise make a "before vs.
+            # after" bracket disagree forever on a freshly loaded table.
+            part_path = self._part_path(cache_path)
+            meta_part_path = self._part_path(meta_path)
+            try:
+                write_fn(part_path)
+                self._write_parquet_file_entry(
+                    part_path,
+                    cache_path,
+                    meta_part_path,
+                    meta_path,
+                    display_key,
+                    source_version,
+                    source_sql,
+                )
+                return export_fn(cache_path)
+            except Exception:
+                self._remove_file(part_path)
+                self._remove_file(meta_part_path)
+                raise
         finally:
             self._release_write_lock(writer_lease)
 

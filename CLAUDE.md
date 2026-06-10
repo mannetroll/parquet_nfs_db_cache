@@ -115,9 +115,14 @@ Key mechanics to understand before changing:
   bytes/schema. Warm reads check size + parquet footer (row count, column count, schema hash); the
   full-file SHA-256 is recomputed on every read only when `verify_checksum=True` (off by default, as
   it is an O(file size) read on the warm path).
-- **Stable cold load** (in `_run_cached_parquet`): reads source version before and after running the
-  write function; if it changed mid-stream, it discards the part file and retries, so a cache entry is
-  never written for a torn read.
+- **Stable cold load** (in `_run_cached_parquet`): the source version is read once, before the write
+  function runs, and stored as the entry's version. A streaming source with statement-level read
+  consistency (Oracle) produces a snapshot that cannot be torn, so the write is not bracketed with a
+  second read. If the table changed between the version read and the stream's snapshot, the stored
+  version is merely older than the data, so the next reader recomputes a newer version, misses, and
+  reloads once — never serving stale. Reading after the write would also fight `MAX(ORA_ROWSCN)` drift
+  from delayed block cleanout, which makes a before/after bracket disagree forever on a freshly loaded
+  table.
 - **Atomic write** (`_write_parquet_file_entry`): the wrapped function streams into a unique `*.part`
   file (`pid + uuid` suffix); the entry is committed by `os.replace` of the parquet then the metadata
   sidecar (metadata is authoritative). Partials are cleaned up on failure.

@@ -120,8 +120,10 @@ __cache__/nfs/sql/DEMO/<hash>.parquet.meta.json
 - Invalidates stale cache entries when the source version changes.
 - SQL sources use normalized SQL for cache keys and `COUNT(*)` plus
   `MAX(ORA_ROWSCN)` as the Oracle version token for the detected `FROM` table.
-- Cold loads re-read the source version before and after streaming and retry if
-  the source changes during the read.
+- Cold loads snapshot the source version once, before streaming, and store it
+  with the entry; Oracle's statement-level read consistency means the streamed
+  snapshot cannot be torn. A table that changes mid-stream just makes the next
+  reader recompute a newer version and reload once — it never serves stale data.
 
 ## Swarm Test
 
