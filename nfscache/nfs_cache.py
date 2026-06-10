@@ -102,14 +102,19 @@ class NFSCache:
                 )
                 func(*part_args, **part_kwargs)
 
-            cache_path = self._run_cached_parquet(
+            def export(validated_path: Path) -> Path:
+                # Runs while _run_cached_parquet still holds the cache lock, so
+                # the validated file cannot be replaced or removed mid-copy.
+                self._copy_cached_parquet(validated_path, output_path)
+                return output_path
+
+            return self._run_cached_parquet(
                 display_key,
                 lambda: self._sql_source_version(normalized_sql),
                 write_part,
                 source_sql=normalized_sql,
+                export_fn=export,
             )
-            self._copy_cached_parquet(cache_path, output_path)
-            return output_path
 
         return wrapper
 
@@ -120,6 +125,7 @@ class NFSCache:
         write_fn: Callable[[Path], None],
         *,
         source_sql: str | None,
+        export_fn: Callable[[Path], Path],
     ) -> Path:
         cache_path = self._cache_path(display_key)
         meta_path = cache_path.with_name(f"{cache_path.name}.meta.json")
@@ -137,7 +143,7 @@ class NFSCache:
                 source_sql,
             )
             if cached_path is not None:
-                return cached_path
+                return export_fn(cached_path)
         finally:
             self._release_read_lock(reader_lease)
 
@@ -156,7 +162,7 @@ class NFSCache:
                 source_sql,
             )
             if cached_path is not None:
-                return cached_path
+                return export_fn(cached_path)
 
             while True:
                 part_path = self._part_path(cache_path)
@@ -174,7 +180,7 @@ class NFSCache:
                             source_version_after,
                             source_sql,
                         )
-                        return cache_path
+                        return export_fn(cache_path)
 
                     print(
                         "Source changed while streaming; retrying cold load...",

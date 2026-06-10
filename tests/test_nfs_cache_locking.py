@@ -125,6 +125,24 @@ class BrokenReaderMetadataCache(NFSCache):
         )
 
 
+class CopyLockObservingCache(NFSCache):
+    """Records how many reader tokens are held when the validated file is copied,
+    proving the export runs while the read lock is still held."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.readers_during_copy: int | None = None
+
+    def _copy_cached_parquet(self, cache_path: Path, output_path: Path) -> None:
+        readers_dir = cache_path.with_name(cache_path.name + ".lock") / "readers"
+        if readers_dir.exists():
+            tokens = [token for token in readers_dir.iterdir() if token.is_dir()]
+        else:
+            tokens = []
+        self.readers_during_copy = len(tokens)
+        return super()._copy_cached_parquet(cache_path, output_path)
+
+
 class NFSCacheLockingTests(unittest.TestCase):
     def test_lock_metadata_is_written_for_reader_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -196,6 +214,28 @@ class NFSCacheLockingTests(unittest.TestCase):
 
             self.assertEqual(cold_loads, 1)
             self.assertGreaterEqual(cache.max_active_readers, 2)
+
+    def test_warm_hit_copies_under_read_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = CopyLockObservingCache(
+                tmp_path / "cache",
+                connect_factory=oracle.connect_factory,
+                poll_seconds=0.005,
+            )
+
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
+                pq.write_table(pa.table({"value": [1, 2, 3]}), parquet_path)
+
+            stream("select * from T", tmp_path / "cold.parquet", object())
+            cache.readers_during_copy = None
+            stream("select * from T", tmp_path / "warm.parquet", object())
+
+            # The warm-hit export ran while this client's read token was held,
+            # so a concurrent writer could not replace the file mid-copy.
+            self.assertEqual(cache.readers_during_copy, 1)
 
     def test_writer_intent_blocks_new_readers_until_existing_readers_finish(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
