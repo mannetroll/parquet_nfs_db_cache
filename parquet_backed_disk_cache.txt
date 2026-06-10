@@ -13,7 +13,7 @@ DataFrame dependency.
 Current implementation
 ----------------------
 
-- NFSCache exposes one decorator:
+- NFSParquetCache exposes one decorator:
   - @nfscache.sql_parquet for SQL sources; the wrapped function streams the
     result set into the Parquet path it is handed.
 - Data is persisted and read with pyarrow.parquet.
@@ -53,8 +53,15 @@ Current implementation
   enabled (off by default to keep warm reads from re-reading the whole file).
 - SQL sources use normalized SQL for cache keys and an Oracle version token:
   COUNT(*) plus MAX(ORA_ROWSCN) for the detected FROM table.
-- Cold loads re-read the source version before and after loading and retry if
-  the source changed during the read.
+- Cold loads snapshot the source version once, before the streaming write, and
+  store it as the entry's version. A statement-consistent streaming source
+  (Oracle) yields a snapshot that cannot be torn, so the write is not bracketed
+  with a second read: if the table changes between the version read and the
+  stream snapshot, the stored version is merely older than the data, so the next
+  reader recomputes a newer version, misses, and reloads exactly once -- never
+  serving stale. This also sidesteps MAX(ORA_ROWSCN) drift from delayed block
+  cleanout, which would make a before/after bracket disagree forever on a freshly
+  loaded table.
 
 Behavior checks
 ---------------
@@ -151,9 +158,16 @@ The current Oracle defaults are for local development only.
 Recommended next steps
 ----------------------
 
-1. Validate mkdir, per-reader tokens, writer intent, stale-lock recovery, and
-   os.replace on the target NFS or SMB mount.
-2. Upgrade Oracle reads to a documented consistent-SCN strategy.
-3. Add structured logging and metrics.
-4. Broaden crash/corruption/source-change tests.
-5. Add operational controls for retention, quotas, cleanup, and bad-key runbooks.
+1. Extend mount validation from the single-mount SMB run (done: macOS client over
+   mount_smbfs against a Windows 10 Pro share -- consistent cache and full locking
+   suite, including stale reader/writer recovery) to a mixed NFS-Linux + SMB-Windows
+   client pool sharing one cache directory across multiple hosts.
+2. Upgrade Oracle reads to a documented consistent-SCN strategy (flashback query or
+   equivalent), and define detection of deletes/truncates/DDL and multi-table joins.
+3. Add structured logging and metrics (hit/miss/reload/invalidation counts, lock wait
+   time, cold-load and parquet read/write durations, stale-lock recovery counts).
+4. Broaden automated failure coverage on the cross-host path: crashed reader/writer
+   token recovery, crash between parquet and metadata, more corrupt-cache variants,
+   and concurrent same-key/different-key clients across processes and hosts.
+5. Add operational controls for retention, quotas, *.part cleanup, cache-version
+   migration, configurable compression, and bad-key runbooks; harden config/secrets.
