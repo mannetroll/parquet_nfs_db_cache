@@ -68,7 +68,7 @@ def stream_data_to_parquet(
                 table = rows_to_table(rows, schema)
                 writer.write_table(table)
                 row_count += table.num_rows
-                print(f"Wrote {row_count} rows", end="\r")
+                print(f"Wrote {row_count} rows")
 
             if row_count == 0:
                 writer.write_table(rows_to_table([], schema))
