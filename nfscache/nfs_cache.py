@@ -941,7 +941,13 @@ class NFSCache:
 
         n_rows = row[0] if row else 0
         scn = int(row[1]) if row and row[1] is not None else 0
-        return f"{table_name.upper()}@SCN:{scn}|ROWS:{n_rows}"
+        version = f"{table_name.upper()}@SCN:{scn}|ROWS:{n_rows}"
+        logger.info(
+            f"_sql_source_version: table={table_name!r} "
+            f"raw_scn={row[1] if row else None!r} raw_rows={n_rows!r} "
+            f"version={version!r}"
+        )
+        return version
 
     def _read_valid_metadata(
         self,
@@ -1009,6 +1015,11 @@ class NFSCache:
             return "corrupt metadata: missing source version"
 
         if metadata.get("source_version") != source_version:
+            logger.info(
+                "stale source version mismatch: "
+                f"stored={metadata.get('source_version')!r} "
+                f"live={source_version!r}"
+            )
             return "stale source version"
 
         parquet_meta = metadata.get("parquet")
