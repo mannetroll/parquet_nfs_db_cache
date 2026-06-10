@@ -50,7 +50,7 @@ class FakeOracle:
         self.connects = 0
         self.version_queries: list[str] = []
 
-    def connect_factory(self) -> FakeConnection:
+    def connect(self) -> FakeConnection:
         self.connects += 1
         return FakeConnection(self)
 
@@ -97,23 +97,23 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
         # return_cols are order- and case-insensitive in the key.
         self.assertEqual(with_cols, cols_reordered)
 
-    def test_source_version_disabled_without_connect_factory(self) -> None:
+    def test_source_version_disabled_without_connection(self) -> None:
         cache = NFSParquetCache(Path("unused"))
-        self.assertIsNone(cache._sql_source_version("select * from t"))
+        self.assertIsNone(cache._sql_source_version("select * from t", None))
 
     def test_source_version_uses_scn_and_row_count(self) -> None:
         oracle = FakeOracle(n_rows=7, scn=4242)
-        cache = NFSParquetCache(Path("unused"), connect_factory=oracle.connect_factory)
-        version = cache._sql_source_version("select * from MYTBL")
+        cache = NFSParquetCache(Path("unused"))
+        version = cache._sql_source_version("select * from MYTBL", oracle.connect())
         self.assertEqual(version, "MYTBL@SCN:4242|ROWS:7")
         self.assertEqual(len(oracle.version_queries), 1)
         self.assertIn("MYTBL", oracle.version_queries[0])
 
     def test_source_version_handles_null_scn(self) -> None:
         oracle = FakeOracle(n_rows=0, scn=None)
-        cache = NFSParquetCache(Path("unused"), connect_factory=oracle.connect_factory)
+        cache = NFSParquetCache(Path("unused"))
         self.assertEqual(
-            cache._sql_source_version("select * from EMPTY_TBL"),
+            cache._sql_source_version("select * from EMPTY_TBL", oracle.connect()),
             "EMPTY_TBL@SCN:0|ROWS:0",
         )
 
@@ -135,15 +135,12 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(
-                tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
-            )
+            cache = NFSParquetCache(tmp_path / "cache")
             counter = [0]
             stream = make_stream(cache, counter)
 
-            first = stream("select * from T", tmp_path / "a.parquet", object())
-            second = stream("select * from T", tmp_path / "b.parquet", object())
+            first = stream("select * from T", tmp_path / "a.parquet", oracle.connect())
+            second = stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(counter[0], 1)
             self.assertEqual(pq.read_table(first).to_pydict(), {"value": [1]})
@@ -153,17 +150,14 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(
-                tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
-            )
+            cache = NFSParquetCache(tmp_path / "cache")
             counter = [0]
             stream = make_stream(cache, counter)
 
-            stream("select * from T", tmp_path / "a.parquet", object())
+            stream("select * from T", tmp_path / "a.parquet", oracle.connect())
             oracle.scn = 200  # table changed -> version token advances
 
-            out = stream("select * from T", tmp_path / "b.parquet", object())
+            out = stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(counter[0], 2)
             self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
@@ -172,17 +166,14 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(
-                tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
-            )
+            cache = NFSParquetCache(tmp_path / "cache")
             counter = [0]
             stream = make_stream(cache, counter)
 
-            stream("select * from T", tmp_path / "a.parquet", object())
+            stream("select * from T", tmp_path / "a.parquet", oracle.connect())
             oracle.n_rows = 5  # SCN unchanged; row-count guard must still invalidate
 
-            stream("select * from T", tmp_path / "b.parquet", object())
+            stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(counter[0], 2)
 
@@ -190,16 +181,13 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(
-                tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
-            )
+            cache = NFSParquetCache(tmp_path / "cache")
             counter = [0]
             stream = make_stream(cache, counter)
 
-            stream("select * from T", tmp_path / "a.parquet", object())
-            stream("select id from T", tmp_path / "b.parquet", object())
-            stream("select * from T", tmp_path / "c.parquet", object())  # warm hit
+            stream("select * from T", tmp_path / "a.parquet", oracle.connect())
+            stream("select id from T", tmp_path / "b.parquet", oracle.connect())
+            stream("select * from T", tmp_path / "c.parquet", oracle.connect())  # warm hit
 
             self.assertEqual(counter[0], 2)
 
@@ -207,18 +195,15 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(
-                tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
-            )
+            cache = NFSParquetCache(tmp_path / "cache")
             counter = [0]
             stream = make_stream(cache, counter)
 
             output_a = tmp_path / "out" / "a.parquet"
             output_b = tmp_path / "out" / "b.parquet"
 
-            returned = stream("select * from T", output_a, object())
-            stream("select * from T", output_b, object())
+            returned = stream("select * from T", output_a, oracle.connect())
+            stream("select * from T", output_b, oracle.connect())
 
             self.assertEqual(returned, output_a)
             self.assertEqual(counter[0], 1)
@@ -232,16 +217,13 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(
-                tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
-            )
+            cache = NFSParquetCache(tmp_path / "cache")
             counter = [0]
             stream = make_stream(cache, counter)
 
-            stream("select * from T", tmp_path / "first.parquet", object())
+            stream("select * from T", tmp_path / "first.parquet", oracle.connect())
             oracle.scn = 200
-            out = stream("select * from T", tmp_path / "second.parquet", object())
+            out = stream("select * from T", tmp_path / "second.parquet", oracle.connect())
 
             self.assertEqual(counter[0], 2)
             self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})

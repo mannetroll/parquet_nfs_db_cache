@@ -57,16 +57,15 @@ class FakeOracle:
         self.n_rows = n_rows
         self.scn = scn
 
-    def connect_factory(self) -> FakeConnection:
+    def connect(self) -> FakeConnection:
         return FakeConnection(self)
 
 
 class ObservedReadParquetCache(NFSParquetCache):
-    def __init__(self, cache_dir: Path, connect_factory: Callable[[], object]) -> None:
+    def __init__(self, cache_dir: Path) -> None:
         super().__init__(
             cache_dir,
             poll_seconds=0.005,
-            connect_factory=connect_factory,
         )
         self.active_readers = 0
         self.max_active_readers = 0
@@ -209,7 +208,7 @@ class NFSCacheLockingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = ObservedReadParquetCache(tmp_path / "cache", oracle.connect_factory)
+            cache = ObservedReadParquetCache(tmp_path / "cache")
             cold_loads = 0
 
             @cache.sql_parquet
@@ -218,13 +217,15 @@ class NFSCacheLockingTests(unittest.TestCase):
                 cold_loads += 1
                 pq.write_table(pa.table({"value": [1, 2, 3]}), parquet_path)
 
-            stream("select * from T", tmp_path / "warm.parquet", object())
+            stream("select * from T", tmp_path / "warm.parquet", oracle.connect())
 
             with ThreadPoolExecutor(max_workers=4) as executor:
                 list(
                     executor.map(
                         lambda i: stream(
-                            "select * from T", tmp_path / f"out_{i}.parquet", object()
+                            "select * from T",
+                            tmp_path / f"out_{i}.parquet",
+                            oracle.connect(),
                         ),
                         range(4),
                     )
@@ -239,7 +240,6 @@ class NFSCacheLockingTests(unittest.TestCase):
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = CopyLockObservingParquetCache(
                 tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
                 poll_seconds=0.005,
             )
 
@@ -247,9 +247,9 @@ class NFSCacheLockingTests(unittest.TestCase):
             def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 pq.write_table(pa.table({"value": [1, 2, 3]}), parquet_path)
 
-            stream("select * from T", tmp_path / "cold.parquet", object())
+            stream("select * from T", tmp_path / "cold.parquet", oracle.connect())
             cache.readers_during_copy = None
-            stream("select * from T", tmp_path / "warm.parquet", object())
+            stream("select * from T", tmp_path / "warm.parquet", oracle.connect())
 
             # The warm-hit export ran while this client's read token was held,
             # so a concurrent writer could not replace the file mid-copy.

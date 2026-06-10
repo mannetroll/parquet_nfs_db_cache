@@ -1,10 +1,12 @@
-"""Process-local oracledb connection pool, exposed as an NFSParquetCache `connect_factory`.
+"""Process-local oracledb connection pool, exposed as a connection factory.
 
-`NFSParquetCache.connect_factory` is an opaque `Callable[[], connection]` that the cache
-uses as `with connect_factory() as conn:`. A pooled connection's `__exit__`
-*releases* it back to the pool instead of closing the socket, so wiring a pool in
-here removes the per-call `oracledb.connect` cost on every version probe and warm
-hit while keeping `nfs_parquet_cache.py` free of any oracledb dependency.
+`make_pool_factory` returns a `Callable[[], connection]` the caller uses as
+`with factory() as conn:` to obtain a connection it then passes to a
+`@NFSParquetCache.sql_parquet` cold-load function. That one connection serves both
+the cache's SCN version probe (run inside the decorator) and the cold stream. A
+pooled connection's `__exit__` *releases* it back to the pool instead of closing
+the socket, so this removes the per-call `oracledb.connect` cost while keeping
+`nfs_parquet_cache.py` free of any oracledb dependency.
 
 Pools are cached per process (keyed by pid + DSN + user): connections are not
 shareable across processes (ProcessPoolExecutor workers each build their own), and
@@ -57,7 +59,7 @@ def make_pool_factory(
     min_size: int = 1,
     max_size: int = 4,
 ):
-    """Build a `connect_factory` that acquires from a process-local pool.
+    """Build a connection factory that acquires from a process-local pool.
 
     The pool is created lazily on first call, so building the factory never
     touches the database (safe to do at import time).

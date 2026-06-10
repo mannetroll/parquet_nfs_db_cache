@@ -49,7 +49,7 @@ class FakeOracle:
         self.n_rows = n_rows
         self.scn = scn
 
-    def connect_factory(self) -> FakeConnection:
+    def connect(self) -> FakeConnection:
         return FakeConnection(self)
 
 
@@ -70,7 +70,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache")
             calls = 0
 
             @cache.sql_parquet
@@ -80,8 +80,8 @@ class NFSCacheMetadataTests(unittest.TestCase):
                 table = pa.table({"id": [1, 2], "name": ["a", "b"]})
                 pq.write_table(table, parquet_path)
 
-            stream("select * from DEMO", tmp_path / "a.parquet", object())
-            stream("select * from DEMO", tmp_path / "b.parquet", object())
+            stream("select * from DEMO", tmp_path / "a.parquet", oracle.connect())
+            stream("select * from DEMO", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(calls, 1)
             metadata_text = self._only_metadata_path(tmp_path / "cache").read_text(
@@ -109,7 +109,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache")
             calls = 0
 
             @cache.sql_parquet
@@ -118,11 +118,11 @@ class NFSCacheMetadataTests(unittest.TestCase):
                 calls += 1
                 pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
-            stream("select * from T", tmp_path / "a.parquet", object())
+            stream("select * from T", tmp_path / "a.parquet", oracle.connect())
             meta_path = self._only_metadata_path(tmp_path / "cache")
             meta_path.write_text("{not-json", encoding="utf-8")
 
-            out = stream("select * from T", tmp_path / "b.parquet", object())
+            out = stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(calls, 2)
             self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
@@ -133,7 +133,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache")
             calls = 0
 
             @cache.sql_parquet
@@ -142,14 +142,14 @@ class NFSCacheMetadataTests(unittest.TestCase):
                 calls += 1
                 pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
-            stream("select * from T", tmp_path / "a.parquet", object())
+            stream("select * from T", tmp_path / "a.parquet", oracle.connect())
             meta_path = self._only_metadata_path(tmp_path / "cache")
             parquet_path = meta_path.with_name(
                 meta_path.name.removesuffix(".meta.json")
             )
             parquet_path.write_bytes(b"not parquet")
 
-            out = stream("select * from T", tmp_path / "b.parquet", object())
+            out = stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(calls, 2)
             self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
@@ -158,7 +158,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache")
             calls = 0
 
             class Loader:
@@ -171,8 +171,8 @@ class NFSCacheMetadataTests(unittest.TestCase):
                     pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
             loader = Loader()
-            loader.stream("select * from T", tmp_path / "a.parquet", object())
-            out = loader.stream("select * from T", tmp_path / "b.parquet", object())
+            loader.stream("select * from T", tmp_path / "a.parquet", oracle.connect())
+            out = loader.stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(calls, 1)
             self.assertEqual(pq.read_table(out).to_pydict(), {"value": [1]})
@@ -183,7 +183,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache")
             raw_sql = " select  *\nfrom DATA_DEMO where id = 1; "
             normalized_sql = "select * from DATA_DEMO where id = 1"
 
@@ -191,7 +191,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
             def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 pq.write_table(pa.table({"id": [1]}), parquet_path)
 
-            stream(raw_sql, tmp_path / "a.parquet", object())
+            stream(raw_sql, tmp_path / "a.parquet", oracle.connect())
             metadata = self._read_only_metadata(tmp_path / "cache")
 
             self.assertEqual(metadata["source_sql"], normalized_sql)
@@ -201,16 +201,16 @@ class NFSCacheMetadataTests(unittest.TestCase):
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = HashCountingParquetCache(
-                tmp_path / "cache", connect_factory=oracle.connect_factory
+                tmp_path / "cache"
             )
 
             @cache.sql_parquet
             def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 pq.write_table(pa.table({"id": [1, 2]}), parquet_path)
 
-            stream("select * from DEMO", tmp_path / "a.parquet", object())
+            stream("select * from DEMO", tmp_path / "a.parquet", oracle.connect())
             cache.hash_calls = 0  # ignore the one-time write-side hash
-            stream("select * from DEMO", tmp_path / "b.parquet", object())
+            stream("select * from DEMO", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(cache.hash_calls, 0)
 
@@ -220,7 +220,6 @@ class NFSCacheMetadataTests(unittest.TestCase):
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = HashCountingParquetCache(
                 tmp_path / "cache",
-                connect_factory=oracle.connect_factory,
                 verify_checksum=True,
             )
 
@@ -228,9 +227,9 @@ class NFSCacheMetadataTests(unittest.TestCase):
             def stream(sql: str, parquet_path: Path, connection: object) -> None:
                 pq.write_table(pa.table({"id": [1, 2]}), parquet_path)
 
-            stream("select * from DEMO", tmp_path / "a.parquet", object())
+            stream("select * from DEMO", tmp_path / "a.parquet", oracle.connect())
             cache.hash_calls = 0
-            stream("select * from DEMO", tmp_path / "b.parquet", object())
+            stream("select * from DEMO", tmp_path / "b.parquet", oracle.connect())
 
             self.assertEqual(cache.hash_calls, 1)
 
@@ -239,7 +238,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
             cache = NFSParquetCache(
-                tmp_path / "cache", connect_factory=oracle.connect_factory
+                tmp_path / "cache"
             )
             calls = 0
 
@@ -249,7 +248,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
                 calls += 1
                 pq.write_table(pa.table({"value": [calls]}), parquet_path)
 
-            stream("select * from T", tmp_path / "a.parquet", object())
+            stream("select * from T", tmp_path / "a.parquet", oracle.connect())
             meta_path = self._only_metadata_path(tmp_path / "cache")
             parquet_path = meta_path.with_name(
                 meta_path.name.removesuffix(".meta.json")
@@ -260,7 +259,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
             parquet_path.write_bytes(bytes(tampered))
             self.assertEqual(parquet_path.stat().st_size, len(original))
 
-            out = stream("select * from T", tmp_path / "b.parquet", object())
+            out = stream("select * from T", tmp_path / "b.parquet", oracle.connect())
 
             # Detected via the parquet-footer check, without re-hashing the file.
             self.assertEqual(calls, 2)

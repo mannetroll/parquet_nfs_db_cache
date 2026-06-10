@@ -75,17 +75,19 @@ atomic export (the export runs while the cache lock is still held, so the file c
 mid-copy). It funnels into `_run_cached_parquet(display_key, version_fn, write_fn, export_fn)`.
 
 - `@nfscache.sql_parquet` — first arg is the SQL string (optional `return_cols=` kwarg); a path
-  argument named `parquet_path` or `output_path` receives the destination. Key is
+  argument named `parquet_path` or `output_path` receives the destination; a `connection` argument
+  (if present) is reused by the cache to read the source version. Key is
   `sql/<TABLE>/<sha256(normalized_sql|cols)>.parquet`; version is read from Oracle as
-  `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`, using
-  `NFSCache.connect_factory`. The table is parsed from the SQL with `_FROM_RE`. On a cache miss the
-  wrapped function is called with the path replaced by a `*.part` file; on a hit the validated cache
-  file is copied to the requested output path.
+  `<TABLE>@SCN:<MAX(ORA_ROWSCN)>|ROWS:<count>` via `_sql_source_version`. The table is parsed from the
+  SQL with `_FROM_RE`. On a cache miss the wrapped function is called with the path replaced by a
+  `*.part` file; on a hit the validated cache file is copied to the requested output path.
 
-`connect_factory` is an opaque `Callable[[], connection]` set on the `NFSCache` instance (see
-`nfscache/database/oracle_streaming.py` and `swarm_stream.py`, which assign a pooled factory). It is
-kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled and
-entries are validated by parquet size/footer (and the SHA-256 only when `verify_checksum=True`).
+The `connection` argument is the same one the cold-load function uses to stream: the decorator binds
+it from the call args (`_connection_arg`) on every call, before the hit/miss decision, so the version
+probe runs even on a warm hit when the body does not. The cache only opens its `cursor()` and never
+closes it (the caller owns the connection's lifecycle), so it never imports `oracledb`. If the wrapped
+function has no `connection` argument (or it is `None`), SQL versioning is disabled and entries are
+validated by parquet size/footer (and the SHA-256 only when `verify_checksum=True`).
 
 Key mechanics to understand before changing:
 
@@ -138,7 +140,8 @@ Key mechanics to understand before changing:
   and `executemany` in batches; prints `current_scn` before/after.
 - `oracle_read.py` — standalone Oracle smoke test: reads SQL into a PyArrow `Table` and logs it. No
   cache, no `NFSCache` dependency (only `oracle_env.apply_dotenv`).
-- `oracle_pool.py` — process-local `oracledb` connection pool exposed as a `connect_factory`.
+- `oracle_pool.py` — process-local `oracledb` connection pool exposed as a connection factory; the
+  caller acquires one connection from it and passes it into the `@sql_parquet` function.
 - `oracle_env.py` — a tiny dependency-free `.env` reader (no python-dotenv); degrades to defaults when
   `.env` is missing **or unreadable** rather than crashing.
 

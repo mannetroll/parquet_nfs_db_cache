@@ -196,24 +196,24 @@ def load_parquet_cache(
     batch_size: int,
 ) -> Path:
     args = oracle_args(batch_size=batch_size)
-    # One process-local pool serves both the SCN version probe and the cold
-    # stream; make_pool_factory memoizes per process so this is built once.
+    # One process-local pool, memoized per process so it is built once. The
+    # single acquired connection serves both the cache's SCN version probe (run
+    # inside the decorator) and the cold stream.
     factory = make_pool_factory(args)
     nfscache = NFSParquetCache(cache_dir)
-    nfscache.connect_factory = factory
 
     @nfscache.sql_parquet
-    def stream(sql_query: str, parquet_path: Path) -> None:
+    def stream(sql_query: str, parquet_path: Path, connection: object) -> None:
         print(
             f"[pid {os.getpid()}] Streaming Oracle -> {parquet_path}: {sql_query}",
             flush=True,
         )
-        with factory() as connection:
-            _stream_to_parquet(
-                sql_query, parquet_path, connection, batch_size=batch_size
-            )
+        _stream_to_parquet(
+            sql_query, parquet_path, connection, batch_size=batch_size
+        )
 
-    return stream(sql, output_path)
+    with factory() as connection:
+        return stream(sql, output_path, connection)
 
 
 def get_once(

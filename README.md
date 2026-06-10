@@ -27,12 +27,14 @@ uv add nfscache[oracle]
 
 ## Usage
 
-Create an `NFSCache` pointed at a directory on the shared filesystem, set
-`connect_factory` (a `Callable[[], connection]` used to read the source
-version), and wrap your cold-load function with `@nfscache.sql_parquet`. The
-wrapped function only runs on a cache miss; on a warm hit the body is skipped
-and the validated cache file is copied to the requested output path through an
-atomic `*.part` + `os.replace` export.
+Create an `NFSCache` pointed at a directory on the shared filesystem and wrap
+your cold-load function with `@nfscache.sql_parquet`. The wrapped function takes
+a `connection` argument; the cache reuses that same connection to read the
+source version (so a warm hit and a cold load share one connection — no separate
+factory). The wrapped function only runs on a cache miss; on a warm hit the body
+is skipped and the validated cache file is copied to the requested output path
+through an atomic `*.part` + `os.replace` export. (Omit the `connection`
+argument to disable SQL versioning and validate by parquet bytes/footer alone.)
 
 ```python
 from pathlib import Path
@@ -44,15 +46,11 @@ import pyarrow.parquet as pq
 from nfscache.nfs_parquet_cache import NFSParquetCache
 
 nfscache = NFSParquetCache(Path("__cache__/nfs"))
-nfscache.connect_factory = lambda: oracledb.connect(
-  user="SOMEUSER",
-  password="cache",
-  dsn="localhost:1521/FREEPDB1",
-)
 
 
 # The first argument is the SQL string; the second is the requested output
-# path. The cache key comes from the normalized SQL, and the source version
+# path; the `connection` argument is reused by the cache to read the source
+# version. The cache key comes from the normalized SQL, and the source version
 # from MAX(ORA_ROWSCN) plus the row count of the detected FROM table.
 @nfscache.sql_parquet
 def stream(sql: str, parquet_path: Path, connection) -> None:
@@ -60,7 +58,11 @@ def stream(sql: str, parquet_path: Path, connection) -> None:
   pq.write_table(table, parquet_path)
 
 
-with nfscache.connect_factory() as connection:
+with oracledb.connect(
+  user="SOMEUSER",
+  password="cache",
+  dsn="localhost:1521/FREEPDB1",
+) as connection:
   stream(
     "select * from DEMO",
     Path("DEMO.parquet"),

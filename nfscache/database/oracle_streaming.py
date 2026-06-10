@@ -108,7 +108,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    nfscache.connect_factory = lambda: connect(args)
 
     with connect(args) as connection:
         output_path = stream_data_to_parquet(

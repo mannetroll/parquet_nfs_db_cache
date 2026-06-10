@@ -55,7 +55,6 @@ class NFSParquetCache:
         poll_seconds: float = 0.1,
         stale_lock_seconds: float = 900.0,
         heartbeat_seconds: float | None = None,
-        connect_factory: Callable[[], object] | None = None,
         verify_checksum: bool = False,
         acquire_timeout_seconds: float | None = None,
     ) -> None:
@@ -69,10 +68,6 @@ class NFSParquetCache:
         if heartbeat_seconds <= 0:
             raise ValueError("heartbeat_seconds must be positive")
         self.heartbeat_seconds = heartbeat_seconds
-        # Opaque callable returning a DB connection (anything with a
-        # context-manager `cursor()`); used by `sql_parquet` to read the
-        # source version. Kept generic so the cache does not depend on oracledb.
-        self.connect_factory = connect_factory
         # When True, every cache validation re-reads the whole parquet to verify
         # its SHA-256. That is an O(file size) read on each warm hit, so it is
         # off by default: atomic os.replace plus the size and parquet-footer
@@ -115,6 +110,12 @@ class NFSParquetCache:
             output_path = Path(
                 self._path_arg(signature, args_tuple, kwargs_dict)
             )
+            # The cache's version probe runs on every call (hit or miss), so it
+            # uses the same connection the caller already passes to the cold-load
+            # function rather than owning a separate one. The argument is bound at
+            # call time, before the hit/miss decision, so it is available even
+            # when the wrapped body never runs.
+            connection = self._connection_arg(signature, args_tuple, kwargs_dict)
             normalized_sql = self._normalize_sql(str(sql))
             return_cols = kwargs_dict.get("return_cols")
             display_key = self._sql_display_key(normalized_sql, return_cols)
@@ -136,7 +137,7 @@ class NFSParquetCache:
 
             return self._run_cached_parquet(
                 display_key,
-                lambda: self._sql_source_version(normalized_sql),
+                lambda: self._sql_source_version(normalized_sql, connection),
                 write_part,
                 source_sql=normalized_sql,
                 export_fn=export,
@@ -847,6 +848,7 @@ class NFSParquetCache:
     # arguments naturally (e.g. `sql_query`, `parquet_path`).
     _SQL_ARG_NAMES = ("sql", "sql_query")
     _PATH_ARG_NAMES = ("parquet_path", "output_path")
+    _CONNECTION_ARG_NAMES = ("connection",)
 
     @staticmethod
     def _sql_arg(
@@ -873,6 +875,29 @@ class NFSParquetCache:
             return args[0]
 
         raise TypeError("sql requires a sql argument")
+
+    @staticmethod
+    def _connection_arg(
+        signature: inspect.Signature,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> object | None:
+        # Optional, unlike sql/path: a cold-load function without a connection
+        # argument simply disables SQL versioning (see _sql_source_version).
+        for name in NFSParquetCache._CONNECTION_ARG_NAMES:
+            if name in kwargs:
+                return kwargs[name]
+
+        try:
+            bound = signature.bind_partial(*args, **kwargs)
+        except TypeError:
+            return None
+
+        for name in NFSParquetCache._CONNECTION_ARG_NAMES:
+            if name in bound.arguments:
+                return bound.arguments[name]
+
+        return None
 
     @staticmethod
     def _path_arg(
@@ -925,8 +950,11 @@ class NFSParquetCache:
         ).hexdigest()[:SQL_CACHE_FINGERPRINT_HEX_LENGTH]
         return f"sql/{table_name}/{fingerprint}.parquet"
 
-    def _sql_source_version(self, sql: str) -> str | None:
-        if self.connect_factory is None:
+    def _sql_source_version(self, sql: str, connection: object | None) -> str | None:
+        # No connection means SQL versioning is disabled: the entry is then
+        # validated by parquet bytes/footer alone. The connection is the caller's
+        # to manage, so only its cursor is opened here -- it is never closed.
+        if connection is None:
             return None
 
         table_name = self._table_from_sql(self._normalize_sql(sql))
@@ -934,10 +962,9 @@ class NFSParquetCache:
             return None
 
         version_query = self.VERSION_SQL.format(table=table_name)
-        with self.connect_factory() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(version_query)
-                row = cursor.fetchone()
+        with connection.cursor() as cursor:
+            cursor.execute(version_query)
+            row = cursor.fetchone()
 
         n_rows = row[0] if row else 0
         scn = int(row[1]) if row and row[1] is not None else 0
