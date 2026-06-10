@@ -1,4 +1,4 @@
-
+uv run  python -m nfscache.util.generate_parquets
 uv run -m nfscache.database.oracle_write parquet/A_TEST_1048576.parquet
 uv run -m nfscache.database.oracle_read "select * from A_TEST_1048576"
 
