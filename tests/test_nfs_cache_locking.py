@@ -397,7 +397,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
             # Another breaker won the rename: the entry is already gone.
             with mock.patch(
-                "nfscache.nfs_cache.os.rename",
+                "nfscache.nfs_parquet_cache.os.rename",
                 side_effect=OSError(errno.ENOENT, "gone"),
             ):
                 self.assertFalse(cache._break_stale_lock(writer_path))
@@ -416,7 +416,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
             real_time = time.time
             with mock.patch(
-                "nfscache.nfs_cache.time.time",
+                "nfscache.nfs_parquet_cache.time.time",
                 new=lambda: real_time() + 600.0,  # client 10 min ahead of server
             ):
                 # By the local clock the fresh lock looks 10 min old (> 30s); the
@@ -439,7 +439,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
             real_time = time.time
             with mock.patch(
-                "nfscache.nfs_cache.time.time",
+                "nfscache.nfs_parquet_cache.time.time",
                 new=lambda: real_time() - 600.0,  # client 10 min behind server
             ):
                 # By the local clock the dead lock looks brand new; the offset
