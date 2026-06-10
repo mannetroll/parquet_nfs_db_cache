@@ -53,6 +53,18 @@ class FakeOracle:
         return FakeConnection(self)
 
 
+class HashCountingCache(NFSCache):
+    """Counts full-file SHA-256 reads so tests can prove warm hits avoid them."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.hash_calls = 0
+
+    def _file_hash(self, path: Path) -> str:  # type: ignore[override]
+        self.hash_calls += 1
+        return NFSCache._file_hash(path)
+
+
 class NFSCacheMetadataTests(unittest.TestCase):
     def test_metadata_contains_authoritative_fields_and_warms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -183,6 +195,76 @@ class NFSCacheMetadataTests(unittest.TestCase):
             metadata = self._read_only_metadata(tmp_path / "cache")
 
             self.assertEqual(metadata["source_sql"], normalized_sql)
+
+    def test_warm_hit_skips_full_file_hash_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = HashCountingCache(
+                tmp_path / "cache", connect_factory=oracle.connect_factory
+            )
+
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
+                pq.write_table(pa.table({"id": [1, 2]}), parquet_path)
+
+            stream("select * from DEMO", tmp_path / "a.parquet", object())
+            cache.hash_calls = 0  # ignore the one-time write-side hash
+            stream("select * from DEMO", tmp_path / "b.parquet", object())
+
+            self.assertEqual(cache.hash_calls, 0)
+
+    def test_verify_checksum_rehashes_warm_hits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = HashCountingCache(
+                tmp_path / "cache",
+                connect_factory=oracle.connect_factory,
+                verify_checksum=True,
+            )
+
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
+                pq.write_table(pa.table({"id": [1, 2]}), parquet_path)
+
+            stream("select * from DEMO", tmp_path / "a.parquet", object())
+            cache.hash_calls = 0
+            stream("select * from DEMO", tmp_path / "b.parquet", object())
+
+            self.assertEqual(cache.hash_calls, 1)
+
+    def test_default_validation_rejects_same_size_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            oracle = FakeOracle(n_rows=2, scn=100)
+            cache = NFSCache(
+                tmp_path / "cache", connect_factory=oracle.connect_factory
+            )
+            calls = 0
+
+            @cache.sql_parquet
+            def stream(sql: str, parquet_path: Path, connection: object) -> None:
+                nonlocal calls
+                calls += 1
+                pq.write_table(pa.table({"value": [calls]}), parquet_path)
+
+            stream("select * from T", tmp_path / "a.parquet", object())
+            meta_path = self._only_metadata_path(tmp_path / "cache")
+            parquet_path = meta_path.with_name(
+                meta_path.name.removesuffix(".meta.json")
+            )
+            original = parquet_path.read_bytes()
+            tampered = bytearray(original)
+            tampered[-4:] = b"junk"  # clobber trailing PAR1 magic; size unchanged
+            parquet_path.write_bytes(bytes(tampered))
+            self.assertEqual(parquet_path.stat().st_size, len(original))
+
+            out = stream("select * from T", tmp_path / "b.parquet", object())
+
+            # Detected via the parquet-footer check, without re-hashing the file.
+            self.assertEqual(calls, 2)
+            self.assertEqual(pq.read_table(out).to_pydict(), {"value": [2]})
 
     @staticmethod
     def _only_metadata_path(cache_dir: Path) -> Path:

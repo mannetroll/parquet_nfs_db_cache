@@ -51,6 +51,7 @@ class NFSCache:
         stale_lock_seconds: float = 1800.0,
         heartbeat_seconds: float | None = None,
         connect_factory: Callable[[], object] | None = None,
+        verify_checksum: bool = False,
     ) -> None:
         self.cache_dir = cache_dir
         self.poll_seconds = poll_seconds
@@ -66,6 +67,13 @@ class NFSCache:
         # context-manager `cursor()`); used by `sql_parquet` to read the
         # source version. Kept generic so the cache does not depend on oracledb.
         self.connect_factory = connect_factory
+        # When True, every cache validation re-reads the whole parquet to verify
+        # its SHA-256. That is an O(file size) read on each warm hit, so it is
+        # off by default: atomic os.replace plus the size and parquet-footer
+        # checks already pin the committed file's identity. Enable it only when
+        # guarding against silent on-disk corruption matters more than warm-read
+        # latency.
+        self.verify_checksum = verify_checksum
 
     def sql_parquet[**P](
         self,
@@ -135,6 +143,10 @@ class NFSCache:
 
         writer_lease = self._acquire_write_lock(lock_path)
         try:
+            # One source query does double duty here: it rechecks the entry
+            # (another writer may have populated it while we waited for the write
+            # lock) and serves as the "before" bracket for the first cold-load
+            # attempt, rather than querying the source twice back-to-back.
             source_version = version_fn()
             cached_path = self._cached_parquet_path_if_valid(
                 cache_path,
@@ -150,10 +162,9 @@ class NFSCache:
                 part_path = self._part_path(cache_path)
                 meta_part_path = self._part_path(meta_path)
                 try:
-                    source_version_before = version_fn()
                     write_fn(part_path)
                     source_version_after = version_fn()
-                    if source_version_before == source_version_after:
+                    if source_version == source_version_after:
                         self._write_parquet_file_entry(
                             part_path,
                             cache_path,
@@ -171,6 +182,9 @@ class NFSCache:
                     )
                     self._remove_file(part_path)
                     self._remove_file(meta_part_path)
+                    # The version seen after this torn attempt is the "before"
+                    # bracket for the next one, so the retry adds no extra query.
+                    source_version = source_version_after
                 except Exception:
                     self._remove_file(part_path)
                     self._remove_file(meta_part_path)
@@ -782,13 +796,18 @@ class NFSCache:
         if not isinstance(expected_sha, str) or len(expected_sha) != 64:
             return "corrupt metadata: invalid parquet checksum"
 
-        try:
-            actual_sha = self._file_hash(cache_path)
-        except OSError as exc:
-            return f"cannot read parquet bytes: {exc}"
+        # Full-file hashing is opt-in (see verify_checksum): it re-reads the
+        # entire parquet on every warm hit. The size check above plus the
+        # parquet-footer checks below already pin the committed file's identity;
+        # the checksum only adds silent-corruption detection.
+        if self.verify_checksum:
+            try:
+                actual_sha = self._file_hash(cache_path)
+            except OSError as exc:
+                return f"cannot read parquet bytes: {exc}"
 
-        if actual_sha != expected_sha:
-            return "parquet checksum mismatch"
+            if actual_sha != expected_sha:
+                return "parquet checksum mismatch"
 
         data_meta = metadata.get("data")
         if not isinstance(data_meta, dict):
