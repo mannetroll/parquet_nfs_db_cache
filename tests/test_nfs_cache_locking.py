@@ -1,6 +1,9 @@
 import errno
 import json
 import os
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -445,6 +448,64 @@ class NFSCacheLockingTests(unittest.TestCase):
 
             self.assertFalse(writer_path.exists())
 
+    def test_dead_same_host_owner_reclaimed_before_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # Huge stale window: only the pid liveness check can reclaim this.
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            writer_path.mkdir(parents=True)
+            self._write_owner(writer_path, socket.gethostname(), self._dead_pid())
+
+            # mtime is fresh, but the owning pid is gone -> reclaim immediately.
+            self.assertTrue(cache._break_stale_lock(writer_path))
+            self.assertFalse(writer_path.exists())
+
+    def test_live_same_host_owner_is_not_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            writer_path.mkdir(parents=True)
+            self._write_owner(writer_path, socket.gethostname(), os.getpid())
+
+            self.assertFalse(cache._break_stale_lock(writer_path))
+            self.assertTrue(writer_path.exists())
+
+    def test_dead_pid_on_other_host_is_not_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            writer_path.mkdir(parents=True)
+            # The pid is dead here, but on another host it is not ours to judge.
+            self._write_owner(writer_path, "some-other-host", self._dead_pid())
+
+            self.assertFalse(cache._break_stale_lock(writer_path))
+            self.assertTrue(writer_path.exists())
+
+    def test_pid_is_dead_reflects_process_liveness(self) -> None:
+        self.assertFalse(NFSCache._pid_is_dead(os.getpid()))
+        self.assertTrue(NFSCache._pid_is_dead(self._dead_pid()))
+
+    def test_acquire_times_out_when_lock_held_by_live_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(
+                Path(tmp) / "cache",
+                poll_seconds=0.005,
+                stale_lock_seconds=100000.0,
+                acquire_timeout_seconds=0.05,
+            )
+            lock_path = Path(tmp) / "entry.parquet.lock"
+            writer_path = lock_path / "writer"
+            writer_path.mkdir(parents=True)
+            self._write_owner(writer_path, socket.gethostname(), os.getpid())
+
+            with self.assertRaises(TimeoutError):
+                cache._acquire_write_lock(lock_path)
+            with self.assertRaises(TimeoutError):
+                cache._acquire_read_lock(lock_path)
+
     def test_release_keeps_shared_lock_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
@@ -494,6 +555,21 @@ class NFSCacheLockingTests(unittest.TestCase):
         old_time = time.time() - 60
         os.utime(metadata_path, (old_time, old_time))
         os.utime(lock_path, (old_time, old_time))
+
+    @staticmethod
+    def _write_owner(lock_path: Path, hostname: str, pid: int) -> None:
+        (lock_path / "lock.json").write_text(
+            json.dumps({"hostname": hostname, "pid": pid}),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _dead_pid() -> int:
+        # A reaped child's pid is gone (barring near-instant reuse, which the
+        # tests' short window makes negligible).
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        return proc.pid
 
 
 if __name__ == "__main__":

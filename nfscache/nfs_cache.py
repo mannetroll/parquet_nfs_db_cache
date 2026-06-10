@@ -52,6 +52,7 @@ class NFSCache:
         heartbeat_seconds: float | None = None,
         connect_factory: Callable[[], object] | None = None,
         verify_checksum: bool = False,
+        acquire_timeout_seconds: float | None = None,
     ) -> None:
         self.cache_dir = cache_dir
         self.poll_seconds = poll_seconds
@@ -85,6 +86,15 @@ class NFSCache:
         self._clock_probe_interval = max(
             self.heartbeat_seconds, min(self.stale_lock_seconds, 30.0)
         )
+        # Optional safety net: bound how long a lock acquisition may spin so a
+        # wedged share or a permanently-held lock surfaces as TimeoutError
+        # instead of hanging forever. None keeps the original unbounded wait.
+        if acquire_timeout_seconds is not None and acquire_timeout_seconds <= 0:
+            raise ValueError("acquire_timeout_seconds must be positive")
+        self.acquire_timeout_seconds = acquire_timeout_seconds
+        # Cached so the value written into lock.json matches what same-host
+        # liveness checks compare against.
+        self._hostname = socket.gethostname()
 
     def sql_parquet[**P](
         self,
@@ -209,6 +219,20 @@ class NFSCache:
         finally:
             self._release_write_lock(writer_lease)
 
+    def _acquire_deadline(self) -> float | None:
+        if self.acquire_timeout_seconds is None:
+            return None
+        return time.monotonic() + self.acquire_timeout_seconds
+
+    def _poll_backoff(self, deadline: float | None, what: str) -> None:
+        # One retry tick. Raises once the optional acquisition deadline passes so
+        # a wedged share cannot spin a client forever.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"timed out after {self.acquire_timeout_seconds}s acquiring {what}"
+            )
+        time.sleep(self.poll_seconds)
+
     def _acquire_read_lock(self, lock_path: Path) -> _LockLease:
         readers_path = lock_path / "readers"
         writer_path = lock_path / "writer"
@@ -216,14 +240,15 @@ class NFSCache:
         # on every retry mints a new directory each spin, which leaks reader
         # folders on shares where removal is racy (e.g. Windows/SMB).
         reader_path = readers_path / self._reader_lock_name()
+        deadline = self._acquire_deadline()
 
         while True:
             if not self._ensure_lock_dirs(lock_path):
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "read lock")
                 continue
             if writer_path.exists():
                 self._break_stale_lock(writer_path)
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "read lock")
                 continue
 
             try:
@@ -232,14 +257,14 @@ class NFSCache:
                 # Our own token survived a previous iteration (a release that
                 # lost the rmdir race). Clear it and retry rather than spin.
                 self._remove_lock_dir(reader_path)
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "read lock")
                 continue
             except FileNotFoundError:
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "read lock")
                 continue
             except OSError as exc:
                 if self._is_transient_lock_mkdir_error(exc):
-                    time.sleep(self.poll_seconds)
+                    self._poll_backoff(deadline, "read lock")
                     continue
                 raise
 
@@ -253,22 +278,23 @@ class NFSCache:
                 self._remove_lock_dir(reader_path)
                 if not self._is_transient_lock_mkdir_error(exc):
                     raise
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "read lock")
                 continue
 
             if not writer_path.exists():
                 return reader_lease
 
             self._release_read_lock(reader_lease)
-            time.sleep(self.poll_seconds)
+            self._poll_backoff(deadline, "read lock")
 
     def _acquire_write_lock(self, lock_path: Path) -> _LockLease:
         readers_path = lock_path / "readers"
         writer_path = lock_path / "writer"
+        deadline = self._acquire_deadline()
 
         while True:
             if not self._ensure_lock_dirs(lock_path):
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "write lock")
                 continue
             try:
                 writer_path.mkdir()
@@ -276,19 +302,19 @@ class NFSCache:
                 break
             except FileExistsError:
                 self._break_stale_lock(writer_path)
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "write lock")
             except FileNotFoundError:
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "write lock")
                 continue
             except OSError as exc:
                 if self._is_transient_lock_mkdir_error(exc):
-                    time.sleep(self.poll_seconds)
+                    self._poll_backoff(deadline, "write lock")
                     continue
                 raise
 
         try:
             while self._has_readers(readers_path):
-                time.sleep(self.poll_seconds)
+                self._poll_backoff(deadline, "write lock (draining readers)")
             return writer_lease
         except Exception:
             self._release_write_lock(writer_lease)
@@ -448,7 +474,7 @@ class NFSCache:
         metadata = {
             "metadata_version": LOCK_METADATA_VERSION,
             "lock_type": lock_type,
-            "hostname": socket.gethostname(),
+            "hostname": self._hostname,
             "pid": os.getpid(),
             "uuid": lock_uuid,
             "created_at": created_at,
@@ -519,6 +545,11 @@ class NFSCache:
             self._remove_lock_dir(steal_path)
 
     def _is_stale_lock(self, lock_path: Path) -> bool:
+        # A lock held by a dead process on this host is reclaimable at once,
+        # without waiting out the mtime timeout — its pid no longer exists.
+        if self._lock_owner_is_dead(lock_path):
+            return True
+
         try:
             lock_mtime = (lock_path / "lock.json").stat().st_mtime
         except FileNotFoundError:
@@ -545,6 +576,38 @@ class NFSCache:
             return self._exceeds_stale_age(lock_mtime)
 
         return True
+
+    def _lock_owner_is_dead(self, lock_path: Path) -> bool:
+        # A pid is meaningful only on the host that minted it, so only same-host
+        # owners are checked. A missing/foreign/unreadable owner falls through to
+        # the mtime-based staleness test.
+        try:
+            metadata = json.loads(
+                (lock_path / "lock.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(metadata, dict):
+            return False
+        if metadata.get("hostname") != self._hostname:
+            return False
+        pid = metadata.get("pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return False
+        return self._pid_is_dead(pid)
+
+    @staticmethod
+    def _pid_is_dead(pid: int) -> bool:
+        # Only declare death on a definitive "no such process". Any other error
+        # (e.g. EPERM: exists but owned by another user) means assume alive, so a
+        # live lock is never broken on uncertainty.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return False
 
     def _exceeds_stale_age(self, lock_mtime: float) -> bool:
         server_now = time.time() + self._clock_offset
