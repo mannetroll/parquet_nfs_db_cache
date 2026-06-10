@@ -39,7 +39,7 @@ class _LockLease:
         self.thread = thread
 
 
-class NFSCache:
+class NFSParquetCache:
     # Cache-key version stamp for a table source. ORA_ROWSCN advances on any
     # change to a row's block, so MAX(ORA_ROWSCN) is a cheap version token; the
     # row count guards against table swaps that do not advance the SCN.
@@ -604,7 +604,7 @@ class NFSCache:
         # (e.g. EPERM: exists but owned by another user) means assume alive, so a
         # live lock is never broken on uncertainty.
         if os.name == "nt":
-            return NFSCache._pid_is_dead_windows(pid)
+            return NFSParquetCache._pid_is_dead_windows(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -854,7 +854,7 @@ class NFSCache:
         args: tuple[object, ...],
         kwargs: Mapping[str, object],
     ) -> object:
-        for name in NFSCache._SQL_ARG_NAMES:
+        for name in NFSParquetCache._SQL_ARG_NAMES:
             if name in kwargs:
                 return kwargs[name]
 
@@ -865,7 +865,7 @@ class NFSCache:
                 return args[0]
             raise
 
-        for name in NFSCache._SQL_ARG_NAMES:
+        for name in NFSParquetCache._SQL_ARG_NAMES:
             if name in bound.arguments:
                 return bound.arguments[name]
 
@@ -881,7 +881,7 @@ class NFSCache:
         kwargs: Mapping[str, object],
     ) -> object:
         bound = signature.bind_partial(*args, **kwargs)
-        for name in NFSCache._PATH_ARG_NAMES:
+        for name in NFSParquetCache._PATH_ARG_NAMES:
             if name in bound.arguments:
                 return bound.arguments[name]
 
@@ -895,7 +895,7 @@ class NFSCache:
         path: Path,
     ) -> tuple[tuple[object, ...], dict[str, object]]:
         bound = signature.bind_partial(*args, **kwargs)
-        for name in NFSCache._PATH_ARG_NAMES:
+        for name in NFSParquetCache._PATH_ARG_NAMES:
             if name in bound.arguments:
                 bound.arguments[name] = path
                 return bound.args, bound.kwargs

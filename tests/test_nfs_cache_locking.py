@@ -16,7 +16,7 @@ from unittest import mock
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from nfscache.nfs_cache import NFSCache
+from nfscache.nfs_parquet_cache import NFSParquetCache
 
 
 class FakeCursor:
@@ -61,7 +61,7 @@ class FakeOracle:
         return FakeConnection(self)
 
 
-class ObservedReadCache(NFSCache):
+class ObservedReadParquetCache(NFSParquetCache):
     def __init__(self, cache_dir: Path, connect_factory: Callable[[], object]) -> None:
         super().__init__(
             cache_dir,
@@ -92,7 +92,7 @@ class ObservedReadCache(NFSCache):
                 self.active_readers -= 1
 
 
-class MissingInitialReaderMetadataDirCache(NFSCache):
+class MissingInitialReaderMetadataDirParquetCache(NFSParquetCache):
     def _start_lock_heartbeat(
         self,
         lock_path: Path,
@@ -109,7 +109,7 @@ class MissingInitialReaderMetadataDirCache(NFSCache):
         )
 
 
-class BrokenReaderMetadataCache(NFSCache):
+class BrokenReaderMetadataParquetCache(NFSParquetCache):
     def _write_lock_metadata(
         self,
         lock_path: Path,
@@ -130,7 +130,7 @@ class BrokenReaderMetadataCache(NFSCache):
         )
 
 
-class CopyLockObservingCache(NFSCache):
+class CopyLockObservingParquetCache(NFSParquetCache):
     """Records how many reader tokens are held when the validated file is copied,
     proving the export runs while the read lock is still held."""
 
@@ -148,7 +148,7 @@ class CopyLockObservingCache(NFSCache):
         return super()._copy_cached_parquet(cache_path, output_path)
 
 
-class StaleThenFreshCache(NFSCache):
+class StaleThenFreshParquetCache(NFSParquetCache):
     """Reports a lock stale on the pre-steal check but fresh once it has been
     moved aside, simulating a lock recreated inside the steal window."""
 
@@ -164,7 +164,7 @@ class StaleThenFreshCache(NFSCache):
 class NFSCacheLockingTests(unittest.TestCase):
     def test_lock_metadata_is_written_for_reader_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
+            cache = NFSParquetCache(Path(tmp) / "cache", poll_seconds=0.005)
             lock_path = Path(tmp) / "entry.parquet.lock"
             reader_lease = cache._acquire_read_lock(lock_path)
             try:
@@ -182,7 +182,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_reader_metadata_write_recreates_missing_token_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = MissingInitialReaderMetadataDirCache(
+            cache = MissingInitialReaderMetadataDirParquetCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
             )
@@ -196,7 +196,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_reader_metadata_write_reraises_non_transient_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = BrokenReaderMetadataCache(
+            cache = BrokenReaderMetadataParquetCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
             )
@@ -209,7 +209,7 @@ class NFSCacheLockingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = ObservedReadCache(tmp_path / "cache", oracle.connect_factory)
+            cache = ObservedReadParquetCache(tmp_path / "cache", oracle.connect_factory)
             cold_loads = 0
 
             @cache.sql_parquet
@@ -237,7 +237,7 @@ class NFSCacheLockingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = CopyLockObservingCache(
+            cache = CopyLockObservingParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
                 poll_seconds=0.005,
@@ -257,7 +257,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_writer_intent_blocks_new_readers_until_existing_readers_finish(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
+            cache = NFSParquetCache(Path(tmp) / "cache", poll_seconds=0.005)
             lock_path = Path(tmp) / "entry.parquet.lock"
             first_reader = cache._acquire_read_lock(lock_path)
             writer_acquired = threading.Event()
@@ -306,7 +306,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_stale_writer_intent_is_broken_for_new_reader(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=0.01,
@@ -325,7 +325,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_stale_reader_token_is_broken_for_writer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=0.01,
@@ -344,7 +344,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_heartbeat_keeps_live_lock_from_becoming_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=0.2,
@@ -363,7 +363,7 @@ class NFSCacheLockingTests(unittest.TestCase):
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=0.01)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=0.01)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
             self._make_stale_lock(writer_path, "writer")
@@ -374,7 +374,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_break_stale_lock_restores_lock_recreated_during_steal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = StaleThenFreshCache(
+            cache = StaleThenFreshParquetCache(
                 Path(tmp) / "cache", stale_lock_seconds=0.01
             )
             root = Path(tmp) / "entry.parquet.lock"
@@ -390,7 +390,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_break_stale_lock_returns_false_when_steal_rename_lost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=0.01)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=0.01)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
             self._make_stale_lock(writer_path, "writer")
@@ -407,7 +407,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_clock_skew_ahead_does_not_break_live_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=30.0)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=30.0)
             (Path(tmp) / "cache").mkdir(parents=True, exist_ok=True)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
@@ -427,7 +427,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_clock_skew_behind_still_breaks_stale_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=30.0)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=30.0)
             (Path(tmp) / "cache").mkdir(parents=True, exist_ok=True)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
@@ -451,7 +451,7 @@ class NFSCacheLockingTests(unittest.TestCase):
     def test_dead_same_host_owner_reclaimed_before_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             # Huge stale window: only the pid liveness check can reclaim this.
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
             writer_path.mkdir(parents=True)
@@ -463,7 +463,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_live_same_host_owner_is_not_reclaimed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
             writer_path.mkdir(parents=True)
@@ -474,7 +474,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_dead_pid_on_other_host_is_not_reclaimed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
+            cache = NFSParquetCache(Path(tmp) / "cache", stale_lock_seconds=100000.0)
             root = Path(tmp) / "entry.parquet.lock"
             writer_path = root / "writer"
             writer_path.mkdir(parents=True)
@@ -485,19 +485,19 @@ class NFSCacheLockingTests(unittest.TestCase):
             self.assertTrue(writer_path.exists())
 
     def test_pid_is_dead_reflects_process_liveness(self) -> None:
-        self.assertFalse(NFSCache._pid_is_dead(os.getpid()))
-        self.assertTrue(NFSCache._pid_is_dead(self._dead_pid()))
+        self.assertFalse(NFSParquetCache._pid_is_dead(os.getpid()))
+        self.assertTrue(NFSParquetCache._pid_is_dead(self._dead_pid()))
 
     @unittest.skipUnless(os.name == "nt", "Windows-only liveness probe")
     def test_pid_is_dead_windows_reflects_process_liveness(self) -> None:
         # os.kill(pid, 0) is a no-op probe on POSIX but not on Windows, so the
         # Win32 path needs its own check: a live pid is alive, a reaped one dead.
-        self.assertFalse(NFSCache._pid_is_dead_windows(os.getpid()))
-        self.assertTrue(NFSCache._pid_is_dead_windows(self._dead_pid()))
+        self.assertFalse(NFSParquetCache._pid_is_dead_windows(os.getpid()))
+        self.assertTrue(NFSParquetCache._pid_is_dead_windows(self._dead_pid()))
 
     def test_acquire_times_out_when_lock_held_by_live_owner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 Path(tmp) / "cache",
                 poll_seconds=0.005,
                 stale_lock_seconds=100000.0,
@@ -515,7 +515,7 @@ class NFSCacheLockingTests(unittest.TestCase):
 
     def test_release_keeps_shared_lock_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
+            cache = NFSParquetCache(Path(tmp) / "cache", poll_seconds=0.005)
             lock_path = Path(tmp) / "entry.parquet.lock"
 
             reader_lease = cache._acquire_read_lock(lock_path)

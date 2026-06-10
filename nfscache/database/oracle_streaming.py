@@ -9,14 +9,14 @@ import pyarrow.parquet as pq
 from nfscache.database.oracle_arrow import rows_to_table
 from nfscache.database.oracle_arrow import schema_from_description
 from nfscache.database.oracle_env import apply_dotenv
-from nfscache.nfs_cache import NFSCache
+from nfscache.nfs_parquet_cache import NFSParquetCache
 
 CACHE_ROOT = Path("__cache__")
 DEFAULT_BATCH_SIZE = 100000
 DEFAULT_COMPRESSION = "snappy"
 DEFAULT_SQL = "select * from A_TEST_1048576"
 DEFAULT_OUTPUT = Path("A_TEST_1048576.parquet")
-nfscache = NFSCache(CACHE_ROOT / "nfs")
+nfscache = NFSParquetCache(CACHE_ROOT / "nfs")
 
 
 def connect(args: argparse.Namespace) -> oracledb.Connection:

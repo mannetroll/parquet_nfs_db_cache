@@ -16,7 +16,7 @@ from nfscache.database.oracle_env import apply_dotenv
 from nfscache.database.oracle_pool import make_pool_factory
 from nfscache.database.oracle_streaming import DEFAULT_BATCH_SIZE
 from nfscache.database.oracle_streaming import DEFAULT_COMPRESSION
-from nfscache.nfs_cache import NFSCache
+from nfscache.nfs_parquet_cache import NFSParquetCache
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,127}$")
 
@@ -199,7 +199,7 @@ def load_parquet_cache(
     # One process-local pool serves both the SCN version probe and the cold
     # stream; make_pool_factory memoizes per process so this is built once.
     factory = make_pool_factory(args)
-    nfscache = NFSCache(cache_dir)
+    nfscache = NFSParquetCache(cache_dir)
     nfscache.connect_factory = factory
 
     @nfscache.sql_parquet

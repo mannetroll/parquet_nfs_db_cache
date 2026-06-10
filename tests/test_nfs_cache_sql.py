@@ -5,7 +5,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from nfscache.nfs_cache import NFSCache
+from nfscache.nfs_parquet_cache import NFSParquetCache
 
 
 class FakeCursor:
@@ -57,7 +57,7 @@ class FakeOracle:
 
 class NFSCacheSqlVersionTests(unittest.TestCase):
     def test_table_from_sql_parses_first_from(self) -> None:
-        cache = NFSCache(Path("unused"))
+        cache = NFSParquetCache(Path("unused"))
         self.assertEqual(cache._table_from_sql("select * from FOO"), "FOO")
         self.assertEqual(
             cache._table_from_sql("SELECT a, b FROM my.schema_tbl WHERE a = 1"),
@@ -71,11 +71,11 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
         self.assertIsNone(cache._table_from_sql("select 1"))
 
     def test_normalize_sql_collapses_whitespace_and_semicolon(self) -> None:
-        normalized = NFSCache._normalize_sql(" select  *\nfrom  T where id = 1; ")
+        normalized = NFSParquetCache._normalize_sql(" select  *\nfrom  T where id = 1; ")
         self.assertEqual(normalized, "select * from T where id = 1")
 
     def test_display_key_includes_table_and_is_stable(self) -> None:
-        cache = NFSCache(Path("unused"))
+        cache = NFSParquetCache(Path("unused"))
         key_a = cache._sql_display_key("select * from orders")
         key_b = cache._sql_display_key("select  *  from   orders")
         self.assertEqual(key_a, key_b)
@@ -84,7 +84,7 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
         self.assertEqual(len(Path(key_a).stem), 16)
 
     def test_display_key_varies_with_sql_and_return_cols(self) -> None:
-        cache = NFSCache(Path("unused"))
+        cache = NFSParquetCache(Path("unused"))
         base = cache._sql_display_key("select * from t")
         other_sql = cache._sql_display_key("select id from t")
         with_cols = cache._sql_display_key("select * from t", return_cols=["A", "B"])
@@ -98,12 +98,12 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
         self.assertEqual(with_cols, cols_reordered)
 
     def test_source_version_disabled_without_connect_factory(self) -> None:
-        cache = NFSCache(Path("unused"))
+        cache = NFSParquetCache(Path("unused"))
         self.assertIsNone(cache._sql_source_version("select * from t"))
 
     def test_source_version_uses_scn_and_row_count(self) -> None:
         oracle = FakeOracle(n_rows=7, scn=4242)
-        cache = NFSCache(Path("unused"), connect_factory=oracle.connect_factory)
+        cache = NFSParquetCache(Path("unused"), connect_factory=oracle.connect_factory)
         version = cache._sql_source_version("select * from MYTBL")
         self.assertEqual(version, "MYTBL@SCN:4242|ROWS:7")
         self.assertEqual(len(oracle.version_queries), 1)
@@ -111,14 +111,14 @@ class NFSCacheSqlVersionTests(unittest.TestCase):
 
     def test_source_version_handles_null_scn(self) -> None:
         oracle = FakeOracle(n_rows=0, scn=None)
-        cache = NFSCache(Path("unused"), connect_factory=oracle.connect_factory)
+        cache = NFSParquetCache(Path("unused"), connect_factory=oracle.connect_factory)
         self.assertEqual(
             cache._sql_source_version("select * from EMPTY_TBL"),
             "EMPTY_TBL@SCN:0|ROWS:0",
         )
 
 
-def make_stream(cache: NFSCache, counter: list[int]):
+def make_stream(cache: NFSParquetCache, counter: list[int]):
     """A @sql_parquet load that writes a one-row Parquet stamped with the
     cold-load count, so warm hits (no reload) are observable in the output."""
 
@@ -135,7 +135,7 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
@@ -153,7 +153,7 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
@@ -172,7 +172,7 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
@@ -190,7 +190,7 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
@@ -207,7 +207,7 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )
@@ -232,7 +232,7 @@ class NFSCacheSqlFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
             )

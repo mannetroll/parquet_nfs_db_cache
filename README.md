@@ -41,13 +41,13 @@ import oracledb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from nfscache.nfs_cache import NFSCache
+from nfscache.nfs_parquet_cache import NFSParquetCache
 
-nfscache = NFSCache(Path("__cache__/nfs"))
+nfscache = NFSParquetCache(Path("__cache__/nfs"))
 nfscache.connect_factory = lambda: oracledb.connect(
-    user="SOMEUSER",
-    password="cache",
-    dsn="localhost:1521/FREEPDB1",
+  user="SOMEUSER",
+  password="cache",
+  dsn="localhost:1521/FREEPDB1",
 )
 
 
@@ -56,16 +56,16 @@ nfscache.connect_factory = lambda: oracledb.connect(
 # from MAX(ORA_ROWSCN) plus the row count of the detected FROM table.
 @nfscache.sql_parquet
 def stream(sql: str, parquet_path: Path, connection) -> None:
-    table = pa.table({"example": [1, 2, 3]})  # replace with cursor.fetchmany()
-    pq.write_table(table, parquet_path)
+  table = pa.table({"example": [1, 2, 3]})  # replace with cursor.fetchmany()
+  pq.write_table(table, parquet_path)
 
 
 with nfscache.connect_factory() as connection:
-    stream(
-        "select * from DEMO",
-        Path("DEMO.parquet"),
-        connection,
-    )
+  stream(
+    "select * from DEMO",
+    Path("DEMO.parquet"),
+    connection,
+  )
 ```
 
 See `nfscache/database/oracle_streaming.py` for a complete Oracle streaming

@@ -6,7 +6,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from nfscache.nfs_cache import NFSCache
+from nfscache.nfs_parquet_cache import NFSParquetCache
 
 
 class FakeCursor:
@@ -53,7 +53,7 @@ class FakeOracle:
         return FakeConnection(self)
 
 
-class HashCountingCache(NFSCache):
+class HashCountingParquetCache(NFSParquetCache):
     """Counts full-file SHA-256 reads so tests can prove warm hits avoid them."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
@@ -62,7 +62,7 @@ class HashCountingCache(NFSCache):
 
     def _file_hash(self, path: Path) -> str:  # type: ignore[override]
         self.hash_calls += 1
-        return NFSCache._file_hash(path)
+        return NFSParquetCache._file_hash(path)
 
 
 class NFSCacheMetadataTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
             @cache.sql_parquet
@@ -109,7 +109,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
             @cache.sql_parquet
@@ -133,7 +133,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
             @cache.sql_parquet
@@ -158,7 +158,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             calls = 0
 
             class Loader:
@@ -183,7 +183,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
+            cache = NFSParquetCache(tmp_path / "cache", connect_factory=oracle.connect_factory)
             raw_sql = " select  *\nfrom DATA_DEMO where id = 1; "
             normalized_sql = "select * from DATA_DEMO where id = 1"
 
@@ -200,7 +200,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = HashCountingCache(
+            cache = HashCountingParquetCache(
                 tmp_path / "cache", connect_factory=oracle.connect_factory
             )
 
@@ -218,7 +218,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = HashCountingCache(
+            cache = HashCountingParquetCache(
                 tmp_path / "cache",
                 connect_factory=oracle.connect_factory,
                 verify_checksum=True,
@@ -238,7 +238,7 @@ class NFSCacheMetadataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             oracle = FakeOracle(n_rows=2, scn=100)
-            cache = NFSCache(
+            cache = NFSParquetCache(
                 tmp_path / "cache", connect_factory=oracle.connect_factory
             )
             calls = 0

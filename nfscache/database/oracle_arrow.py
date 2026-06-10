@@ -1,7 +1,7 @@
 """Oracle result-set -> PyArrow mapping helpers.
 
 Dependency-free in the project sense: this module imports only `oracledb` and
-`pyarrow`, never `nfscache.nfs_cache` (NFSCache) or any cache machinery. It is
+`pyarrow`, never `nfscache.nfs_cache` (NFSParquetCache) or any cache machinery. It is
 the single source of truth for turning an Oracle cursor `description` into a
 PyArrow schema and fetched rows into PyArrow tables, shared by
 `oracle_streaming.py` (cache streaming) and `oracle_read.py` (standalone read).
