@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -141,6 +143,19 @@ class CopyLockObservingCache(NFSCache):
             tokens = []
         self.readers_during_copy = len(tokens)
         return super()._copy_cached_parquet(cache_path, output_path)
+
+
+class StaleThenFreshCache(NFSCache):
+    """Reports a lock stale on the pre-steal check but fresh once it has been
+    moved aside, simulating a lock recreated inside the steal window."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.stale_checks = 0
+
+    def _is_stale_lock(self, lock_path: Path) -> bool:
+        self.stale_checks += 1
+        return self.stale_checks == 1
 
 
 class NFSCacheLockingTests(unittest.TestCase):
@@ -340,6 +355,52 @@ class NFSCacheLockingTests(unittest.TestCase):
                 self.assertTrue(reader_lease.path.exists())
             finally:
                 cache._release_read_lock(reader_lease)
+
+    def test_break_stale_lock_steals_genuinely_stale_lock_without_leak(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=0.01)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            self._make_stale_lock(writer_path, "writer")
+
+            self.assertTrue(cache._break_stale_lock(writer_path))
+            self.assertFalse(writer_path.exists())
+            self.assertEqual(list(root.glob("*.steal.*")), [])
+
+    def test_break_stale_lock_restores_lock_recreated_during_steal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = StaleThenFreshCache(
+                Path(tmp) / "cache", stale_lock_seconds=0.01
+            )
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            self._make_stale_lock(writer_path, "writer")
+
+            # Stale on the pre-check, fresh once moved aside -> must be restored,
+            # not destroyed.
+            self.assertFalse(cache._break_stale_lock(writer_path))
+            self.assertTrue(writer_path.exists())
+            self.assertTrue((writer_path / "lock.json").is_file())
+            self.assertEqual(list(root.glob("*.steal.*")), [])
+
+    def test_break_stale_lock_returns_false_when_steal_rename_lost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=0.01)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            self._make_stale_lock(writer_path, "writer")
+
+            # Another breaker won the rename: the entry is already gone.
+            with mock.patch(
+                "nfscache.nfs_cache.os.rename",
+                side_effect=OSError(errno.ENOENT, "gone"),
+            ):
+                self.assertFalse(cache._break_stale_lock(writer_path))
+
+            self.assertTrue(writer_path.exists())
+            self.assertEqual(list(root.glob("*.steal.*")), [])
 
     def test_release_keeps_shared_lock_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

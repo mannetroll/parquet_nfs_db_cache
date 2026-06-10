@@ -346,6 +346,13 @@ class NFSCache:
             return False
 
         for reader_path in reader_paths:
+            if ".steal." in reader_path.name:
+                # Transient artifact of a reader-token steal in progress; never a
+                # live reader. Clean it only if its stealer died and left it
+                # stale, otherwise let the stealer finish.
+                if self._is_stale_lock(reader_path):
+                    self._remove_lock_dir(reader_path)
+                continue
             if not reader_path.is_dir():
                 self._remove_file(reader_path)
                 continue
@@ -443,12 +450,52 @@ class NFSCache:
         os.replace(part_path, metadata_path)
 
     def _break_stale_lock(self, lock_path: Path) -> bool:
-        if not lock_path.exists() or not self._is_stale_lock(lock_path):
+        # Steal a stale lock by atomic rename, not blind removal. Renaming the
+        # entry to a unique private name is the only compare-and-swap a shared
+        # filesystem offers: of many clients racing the same stale lock, exactly
+        # one rename of a given directory succeeds, so a second breaker can never
+        # delete a lock a third client legitimately recreated (the cascade the
+        # old check-then-rmdir allowed).
+        if not self._is_stale_lock(lock_path):
+            return False
+
+        steal_path = lock_path.with_name(
+            f"{lock_path.name}.steal.{os.getpid()}.{uuid.uuid4().hex[:16]}"
+        )
+        try:
+            os.rename(lock_path, steal_path)
+        except OSError as exc:
+            # ENOENT/ESTALE: another breaker won, or the owner released it.
+            # ENOTDIR/EINVAL: the entry changed shape under us. All mean retry.
+            if exc.errno in {
+                errno.ENOENT,
+                errno.ESTALE,
+                errno.ENOTDIR,
+                errno.EINVAL,
+            }:
+                return False
+            raise
+
+        # We now exclusively own steal_path. Re-check the entry we actually
+        # grabbed: a lock recreated between the staleness check above and the
+        # rename would otherwise be destroyed, so if it is no longer stale we put
+        # it back untouched.
+        if not self._is_stale_lock(steal_path):
+            self._restore_stolen_lock(steal_path, lock_path)
             return False
 
         print(f"Breaking stale cache lock: {lock_path}", flush=True)
-        self._remove_lock_dir(lock_path)
-        return not lock_path.exists()
+        self._remove_lock_dir(steal_path)
+        return True
+
+    def _restore_stolen_lock(self, steal_path: Path, lock_path: Path) -> None:
+        # The entry was live after all (recreated during the steal). Put it back
+        # if its slot is still free; if a new owner already claimed the slot,
+        # drop our moved copy rather than overwrite the new owner or leak it.
+        try:
+            os.rename(steal_path, lock_path)
+        except OSError:
+            self._remove_lock_dir(steal_path)
 
     def _is_stale_lock(self, lock_path: Path) -> bool:
         try:
