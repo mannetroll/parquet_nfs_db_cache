@@ -74,6 +74,17 @@ class NFSCache:
         # guarding against silent on-disk corruption matters more than warm-read
         # latency.
         self.verify_checksum = verify_checksum
+        # Lock staleness compares a lock file's mtime (stamped by the file
+        # server) against "now". Using this client's wall clock there makes the
+        # age wrong by exactly the client/server clock skew, which across many
+        # NFS/SMB hosts can wrongly break live locks or never break dead ones. We
+        # instead learn our offset from the server clock by reading the mtime the
+        # server assigns to files we write, and correct "now" by it.
+        self._clock_offset = 0.0
+        self._clock_offset_at: float | None = None
+        self._clock_probe_interval = max(
+            self.heartbeat_seconds, min(self.stale_lock_seconds, 30.0)
+        )
 
     def sql_parquet[**P](
         self,
@@ -443,11 +454,21 @@ class NFSCache:
             "created_at": created_at,
             "last_seen": self._utc_now(),
         }
+        before = time.time()
         part_path.write_text(
             json.dumps(metadata, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
         os.replace(part_path, metadata_path)
+        # Learn our offset from the server clock for free: os.replace preserves
+        # the part file's server-stamped mtime, so the committed lock.json mtime
+        # is "now" in the server's clock domain.
+        try:
+            self._record_clock_offset(
+                metadata_path.stat().st_mtime, before, time.time()
+            )
+        except OSError:
+            pass
 
     def _break_stale_lock(self, lock_path: Path) -> bool:
         # Steal a stale lock by atomic rename, not blind removal. Renaming the
@@ -499,14 +520,66 @@ class NFSCache:
 
     def _is_stale_lock(self, lock_path: Path) -> bool:
         try:
-            metadata_mtime = (lock_path / "lock.json").stat().st_mtime
+            lock_mtime = (lock_path / "lock.json").stat().st_mtime
         except FileNotFoundError:
             try:
-                metadata_mtime = lock_path.stat().st_mtime
+                lock_mtime = lock_path.stat().st_mtime
             except FileNotFoundError:
                 return False
 
-        return (time.time() - metadata_mtime) > self.stale_lock_seconds
+        # Cold start: if we have never measured our offset from the server clock,
+        # do it once so the comparison below is in the server's domain. (A client
+        # whose clock runs behind would otherwise read every lock as fresh and
+        # never break a genuinely dead one.)
+        if self._clock_offset_at is None:
+            self._refresh_clock_offset()
+
+        if not self._exceeds_stale_age(lock_mtime):
+            return False
+
+        # It looks stale, but a drifted offset could be lying. Re-measure against
+        # a fresh server timestamp before committing to a break, unless we just
+        # measured it.
+        if not self._clock_offset_is_fresh():
+            self._refresh_clock_offset()
+            return self._exceeds_stale_age(lock_mtime)
+
+        return True
+
+    def _exceeds_stale_age(self, lock_mtime: float) -> bool:
+        server_now = time.time() + self._clock_offset
+        return (server_now - lock_mtime) > self.stale_lock_seconds
+
+    def _clock_offset_is_fresh(self) -> bool:
+        if self._clock_offset_at is None:
+            return False
+        age = time.monotonic() - self._clock_offset_at
+        return age <= self._clock_probe_interval
+
+    def _record_clock_offset(
+        self, server_mtime: float, before: float, after: float
+    ) -> None:
+        # The midpoint of the local interval bracketing the write best estimates
+        # the local instant the server stamped the mtime; their difference is our
+        # offset from the server clock.
+        self._clock_offset = server_mtime - (before + after) / 2.0
+        self._clock_offset_at = time.monotonic()
+
+    def _refresh_clock_offset(self) -> None:
+        probe_path = self.cache_dir / (
+            f".clock.{os.getpid()}.{uuid.uuid4().hex[:16]}.tmp"
+        )
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            before = time.time()
+            probe_path.write_text("", encoding="utf-8")
+            server_mtime = probe_path.stat().st_mtime
+            after = time.time()
+        except OSError:
+            return
+        finally:
+            self._remove_file(probe_path)
+        self._record_clock_offset(server_mtime, before, after)
 
     @staticmethod
     def _remove_lock_dir(lock_path: Path) -> None:

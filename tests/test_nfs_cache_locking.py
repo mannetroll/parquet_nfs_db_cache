@@ -402,6 +402,49 @@ class NFSCacheLockingTests(unittest.TestCase):
             self.assertTrue(writer_path.exists())
             self.assertEqual(list(root.glob("*.steal.*")), [])
 
+    def test_clock_skew_ahead_does_not_break_live_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=30.0)
+            (Path(tmp) / "cache").mkdir(parents=True, exist_ok=True)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            writer_path.mkdir(parents=True)
+            (writer_path / "lock.json").write_text("{}", encoding="utf-8")
+
+            real_time = time.time
+            with mock.patch(
+                "nfscache.nfs_cache.time.time",
+                new=lambda: real_time() + 600.0,  # client 10 min ahead of server
+            ):
+                # By the local clock the fresh lock looks 10 min old (> 30s); the
+                # server-time offset must cancel the skew so it is not broken.
+                self.assertFalse(cache._break_stale_lock(writer_path))
+
+            self.assertTrue(writer_path.exists())
+
+    def test_clock_skew_behind_still_breaks_stale_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = NFSCache(Path(tmp) / "cache", stale_lock_seconds=30.0)
+            (Path(tmp) / "cache").mkdir(parents=True, exist_ok=True)
+            root = Path(tmp) / "entry.parquet.lock"
+            writer_path = root / "writer"
+            writer_path.mkdir(parents=True)
+            meta = writer_path / "lock.json"
+            meta.write_text("{}", encoding="utf-8")
+            old = time.time() - 600.0  # 10 min old by the server clock
+            os.utime(meta, (old, old))
+
+            real_time = time.time
+            with mock.patch(
+                "nfscache.nfs_cache.time.time",
+                new=lambda: real_time() - 600.0,  # client 10 min behind server
+            ):
+                # By the local clock the dead lock looks brand new; the offset
+                # must still reveal it as stale.
+                self.assertTrue(cache._break_stale_lock(writer_path))
+
+            self.assertFalse(writer_path.exists())
+
     def test_release_keeps_shared_lock_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache = NFSCache(Path(tmp) / "cache", poll_seconds=0.005)
