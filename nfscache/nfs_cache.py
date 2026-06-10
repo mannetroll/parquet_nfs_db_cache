@@ -603,6 +603,8 @@ class NFSCache:
         # Only declare death on a definitive "no such process". Any other error
         # (e.g. EPERM: exists but owned by another user) means assume alive, so a
         # live lock is never broken on uncertainty.
+        if os.name == "nt":
+            return NFSCache._pid_is_dead_windows(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -610,6 +612,53 @@ class NFSCache:
         except OSError:
             return False
         return False
+
+    @staticmethod
+    def _pid_is_dead_windows(pid: int) -> bool:
+        # os.kill(pid, 0) is unusable on Windows: it routes through
+        # OpenProcess(PROCESS_ALL_ACCESS)+TerminateProcess, so a missing pid
+        # raises EINVAL (not ProcessLookupError) and a live, openable pid would
+        # actually be terminated. Probe liveness directly via the Win32 API with
+        # query-only rights instead.
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        ERROR_INVALID_PARAMETER = 87
+        STILL_ACTIVE = 259
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        )
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+        handle = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            # A missing pid is the only definitive death signal here
+            # (ERROR_INVALID_PARAMETER). Access-denied or anything else means
+            # the process exists but is not ours to judge: assume alive.
+            return ctypes.get_last_error() == ERROR_INVALID_PARAMETER
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            # STILL_ACTIVE means running; any other code means it has exited.
+            # A live process that exits with 259 is indistinguishable, but that
+            # is rare and erring toward "alive" never breaks a live lock.
+            return exit_code.value != STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
 
     def _exceeds_stale_age(self, lock_mtime: float) -> bool:
         server_now = time.time() + self._clock_offset
