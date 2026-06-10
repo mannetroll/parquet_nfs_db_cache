@@ -71,7 +71,8 @@ PyArrow `Table` and logs it.
 The caching engine is one class exposing **one decorator**, `@nfscache.sql_parquet`, that wraps a
 `Callable[..., None]` whose job is to write a Parquet file to a given path. The wrapped function is
 the cold-load source; the decorator handles locking, invalidation, the streaming write, and the
-atomic export. It funnels into `_run_cached_parquet(display_key, version_fn, write_fn)`.
+atomic export (the export runs while the cache lock is still held, so the file cannot be replaced
+mid-copy). It funnels into `_run_cached_parquet(display_key, version_fn, write_fn, export_fn)`.
 
 - `@nfscache.sql_parquet` — first arg is the SQL string (optional `return_cols=` kwarg); a path
   argument named `parquet_path` or `output_path` receives the destination. Key is
@@ -84,7 +85,7 @@ atomic export. It funnels into `_run_cached_parquet(display_key, version_fn, wri
 `connect_factory` is an opaque `Callable[[], connection]` set on the `NFSCache` instance (see
 `nfscache/database/oracle_streaming.py` and `swarm_stream.py`, which assign a pooled factory). It is
 kept generic so `nfs_cache.py` never imports `oracledb`. If unset, SQL versioning is disabled and
-entries are validated by parquet bytes/schema only.
+entries are validated by parquet size/footer (and the SHA-256 only when `verify_checksum=True`).
 
 Key mechanics to understand before changing:
 
@@ -96,13 +97,24 @@ Key mechanics to understand before changing:
   create per-reader tokens and can overlap. Writers create a writer-intent directory, block new
   readers, and wait for active readers to drain before writing or revalidating stale entries. Reader
   tokens and writer intent store `lock.json` metadata (`hostname`, `pid`, `uuid`, `created_at`,
-  `last_seen`) and update `last_seen` by heartbeat while held. Locks older than `stale_lock_seconds`
-  are broken. The default stale timeout is 30 minutes so a live 10-minute Oracle cold read is not
-  treated as abandoned.
+  `last_seen`) and update `last_seen` by heartbeat while held. The default `stale_lock_seconds` is
+  15 minutes so a live 10-minute Oracle cold read is not treated as abandoned; an optional
+  `acquire_timeout_seconds` bounds the total wait so a wedged mount raises `TimeoutError` instead of
+  spinning forever.
+- **Stale-lock recovery** (`_break_stale_lock` + `_is_stale_lock`): staleness is judged in the file
+  server's clock domain — the cache learns its offset from the server clock via the mtimes the server
+  stamps on files it writes, so client/server clock skew does not wrongly break (or keep) a lock. A
+  lock held by a dead process on the *same host* (its `pid` no longer exists) is reclaimed immediately,
+  without waiting out the timeout. A stale lock is broken by *atomic rename* to a unique private name
+  (the only compare-and-swap a shared FS offers): exactly one racer wins, then it re-verifies
+  staleness on the entry it grabbed and restores it untouched if it turned out live — so a freshly
+  recreated lock is never clobbered.
 - **Invalidation** (`_sql_source_version` + `_read_valid_metadata`): a sidecar `*.meta.json` stores the
   `source_version`, source key, parquet size/checksum, row count, column count, and schema hash. SQL
-  entries use `MAX(ORA_ROWSCN)|ROWS`. If the source version is `None`, the entry is validated by
-  parquet bytes/schema.
+  entries use `MAX(ORA_ROWSCN)|ROWS`. If the source version is `None`, the entry is validated by parquet
+  bytes/schema. Warm reads check size + parquet footer (row count, column count, schema hash); the
+  full-file SHA-256 is recomputed on every read only when `verify_checksum=True` (off by default, as
+  it is an O(file size) read on the warm path).
 - **Stable cold load** (in `_run_cached_parquet`): reads source version before and after running the
   write function; if it changed mid-stream, it discards the part file and retries, so a cache entry is
   never written for a torn read.

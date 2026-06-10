@@ -18,6 +18,9 @@ Current implementation
     result set into the Parquet path it is handed.
 - Data is persisted and read with pyarrow.parquet.
 - Cache writes use unique *.part files and os.replace for final replacement.
+- Warm hits copy the validated cache file to the output path (via *.part +
+  os.replace) while still holding the read lock, so a concurrent writer cannot
+  replace the file mid-copy.
 - Per-key locking is a mkdir-based read/write lock:
   - warm readers create per-reader lock tokens and can overlap
   - writers and invalidations create writer intent, block new readers, and wait
@@ -25,8 +28,18 @@ Current implementation
   - reader tokens and writer intent include lock.json metadata with hostname,
     PID, UUID, created_at, and last_seen
   - held locks update last_seen with a heartbeat while the process is alive
-  - stale reader/writer locks are broken after stale_lock_seconds
-  - the default stale timeout is 30 minutes to allow 10-minute cold Oracle reads
+  - stale reader/writer locks are broken after stale_lock_seconds; the default
+    is 15 minutes to allow 10-minute cold Oracle reads
+  - staleness is judged in the file server's clock domain via a measured
+    client/server clock offset, so clock skew across hosts does not wrongly
+    break or keep a lock
+  - a lock held by a dead process on the same host (its PID no longer exists) is
+    reclaimed immediately, without waiting out the timeout
+  - stale locks are stolen by atomic rename to a private name (only one racer
+    wins), re-verified after stealing, and restored if they turned out live, so
+    a freshly recreated lock is never clobbered
+  - an optional acquire_timeout_seconds bounds the total acquisition wait and
+    raises TimeoutError instead of spinning forever on a wedged mount
   - resilient lock-dir removal and mkdir retry tolerate the racier removal
     semantics of SMB/Windows shares
   - lock cleanup removes per-client reader/writer tokens but leaves shared
@@ -35,8 +48,9 @@ Current implementation
   source_version, parquet byte size, parquet SHA-256, row count, column count,
   schema hash, writer version, created_at, and normalized source_sql.
 - Readers reject cache entries with missing, stale, unsupported, or corrupt
-  metadata, and validate parquet size/checksum/row count/schema hash before a
-  warm hit.
+  metadata, and validate parquet size, row count, and schema hash before a warm
+  hit; the full-file SHA-256 is re-verified on read only when verify_checksum is
+  enabled (off by default to keep warm reads from re-reading the whole file).
 - SQL sources use normalized SQL for cache keys and an Oracle version token:
   COUNT(*) plus MAX(ORA_ROWSCN) for the detected FROM table.
 - Cold loads re-read the source version before and after loading and retry if
@@ -107,11 +121,14 @@ Replace print-based status with structured logs and metrics:
 
 4. Broaden automated failure tests
 
-The current unit tests and swarm run are useful, but enterprise readiness needs
-repeatable tests for:
+The current unit tests and swarm run are useful — same-host dead-owner reclaim,
+clock-skew-safe staleness, atomic stale-lock stealing, and acquisition timeout
+now have unit coverage — but enterprise readiness still needs repeatable tests
+for (chiefly the cross-host/integration cases):
 
-- crashed reader while holding a read token
-- crashed writer while holding writer intent
+- crashed reader while holding a read token (same-host reclaim is unit-tested;
+  the cross-host path waits out stale_lock_seconds)
+- crashed writer while holding writer intent (same as above)
 - crashed writer after writing parquet but before metadata
 - more corrupted parquet and metadata variants
 - source changes during a cold DB read

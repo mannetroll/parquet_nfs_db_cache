@@ -89,8 +89,20 @@ example that fetches with a cursor and writes batches via
 - Lock tokens include `lock.json` metadata with hostname, PID, UUID,
   `created_at`, and `last_seen`; held locks heartbeat `last_seen`, and stale
   reader/writer tokens are broken after `stale_lock_seconds`.
-- The default stale lock timeout is 30 minutes, sized for cold Oracle reads that
+- The default stale lock timeout is 15 minutes, sized for cold Oracle reads that
   can take around 10 minutes while still heartbeating as live work.
+- Judges staleness in the file server's clock domain (via a measured
+  client/server clock offset), so clock skew across hosts does not wrongly break
+  or keep a lock.
+- Reclaims a lock held by a dead process on the same host immediately (its PID no
+  longer exists), without waiting out the timeout.
+- Breaks a stale lock by atomic rename to a private name (only one racer wins),
+  re-verifies staleness on what it grabbed, and restores it untouched if it
+  turned out live — so a freshly recreated lock is never clobbered.
+- Optional `acquire_timeout_seconds` bounds the total acquisition wait and raises
+  `TimeoutError` instead of spinning forever on a wedged mount.
+- Copies the validated cache file to the output path while still holding the read
+  lock, so a concurrent writer cannot replace the file mid-copy.
 - Adds an authoritative metadata sidecar:
 
 ```text
@@ -102,7 +114,9 @@ __cache__/nfs/sql/DEMO/<hash>.parquet.meta.json
   count, column count, schema hash, writer version, created time, and normalized
   `source_sql`.
 - Readers reject missing, stale, unsupported, or corrupt metadata and validate
-  parquet size/checksum/row count/schema hash before returning a warm hit.
+  parquet size, row count, and schema hash before returning a warm hit; the
+  full-file SHA-256 is re-verified on read only when `verify_checksum=True` (off
+  by default, since it re-reads the whole file on every warm hit).
 - Invalidates stale cache entries when the source version changes.
 - SQL sources use normalized SQL for cache keys and `COUNT(*)` plus
   `MAX(ORA_ROWSCN)` as the Oracle version token for the detected `FROM` table.
@@ -243,9 +257,11 @@ clients, the next important pieces are:
 - tie long Oracle reads to a documented consistent SCN/snapshot strategy
 - add structured logs and metrics for hit/miss/reload, reader/writer lock wait,
   cold load duration, parquet write/read duration, and corruption/retry counts
-- broaden automated failure tests for crashed lock holders, corrupted files,
-  source changes during cold load, and multi-host / multi-protocol integration
-  (NFS and SMB clients against one cache)
+- broaden automated failure tests for crashed lock holders (same-host dead-owner
+  recovery, clock-skew-safe staleness, and atomic stale-lock stealing now have
+  unit coverage; cross-host crashes still need integration tests), corrupted
+  files, source changes during cold load, and multi-host / multi-protocol
+  integration (NFS and SMB clients against one cache)
 - add operational controls for cache retention, quotas, old `*.part` cleanup,
   version migration, compression, permissions, and bad-key runbooks
 ```

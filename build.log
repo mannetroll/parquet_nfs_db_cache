@@ -25,10 +25,14 @@ docker volume rm oracle_scn_data
 docker ps --filter name=oracle-scn
 docker logs -f oracle-scn
 
+
+
 smbutil view //drtobbe@192.168.0.8
 uv run --no-cache --no-sync python -m nfscache.util.swarm_stream --clients 6 --writers 2 --gets-per-client 12 --generations 4 --cache-dir /Users/drtobbe/mnt/win10cache/swarm --out-dir /Users/drtobbe/mnt/win10cache/out
 
-sudo mount -t cifs //192.168.0.8/win10cache /mnt/win10cache   -o username=drtobbe,domain=Farin,vers=3.0,uid=$(id -u),gid=$(id -g)
+net use Z: \\192.168.0.8\win10cache /user:drtobbe *
+sudo mount -t cifs //192.168.0.8/win10cache /mnt/win10cache  -o username=drtobbe,domain=Farin,vers=3.0,uid=$(id -u),gid=$(id -g)
+New-PSDrive -Name Z -PSProvider FileSystem -Root "\\192.168.0.8\win10cache" -Persist
 uv run --no-cache --no-sync python -m nfscache.util.swarm_stream --clients 6 --writers 2 --gets-per-client 12 --generations 4 --cache-dir /mnt/win10cache/swarm --out-dir /mnt/win10cache/out
 
 
